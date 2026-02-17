@@ -16,6 +16,7 @@ export interface TimeBlock {
     description: string;
     location?: LocationData;      // start / origin
     destination?: LocationData;   // end / destination (route planning)
+    routeMode?: 'simple' | 'precise'; // default 'simple' (bezier curve)
 }
 
 export interface DragState {

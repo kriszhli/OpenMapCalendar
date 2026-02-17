@@ -367,3 +367,32 @@
     min-height: 60px;
     border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
+
+/* ─── Route mode toggle ─── */
+.route-mode-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    flex-shrink: 0;
+    border-radius: 6px;
+    background: var(--glow-soft);
+    border: 1px solid var(--glow-accent);
+    color: var(--text-low);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    padding: 0;
+    margin-left: 2px;
+}
+
+.route-mode-toggle:hover {
+    background: var(--card-hover);
+    color: var(--text-high);
+    border-color: var(--text-low);
+}
+
+.route-mode-toggle.precise {
+    color: var(--text-med);
+    background: var(--glow-accent);
+}

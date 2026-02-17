@@ -237,22 +237,70 @@ const MapView: React.FC<MapViewProps> = ({ events, hoveredEventId, onHoverEvent 
             markersRef.current.set(ev.id, eventMarkers);
             glowMarkersRef.current.set(ev.id, eventGlows);
 
-            // Fetch & draw route if both locations exist
+            // Draw route if both locations exist
             if (ev.location && ev.destination) {
-                fetchRoute(
-                    ev.location.lat, ev.location.lng,
-                    ev.destination.lat, ev.destination.lng,
-                ).then((coords) => {
-                    if (isCancelled || !coords || !mapRef.current) return;
-                    const polyline = L.polyline(coords, {
+                const startLatLng = L.latLng(ev.location.lat, ev.location.lng);
+                const endLatLng = L.latLng(ev.destination.lat, ev.destination.lng);
+                const mode = ev.routeMode || 'simple';
+
+                if (mode === 'precise') {
+                    // Precise mode: fetch OSRM route
+                    fetchRoute(
+                        ev.location.lat, ev.location.lng,
+                        ev.destination.lat, ev.destination.lng,
+                    ).then((coords) => {
+                        if (isCancelled || !coords || !mapRef.current) return;
+                        const polyline = L.polyline(coords, {
+                            color,
+                            weight: 3,
+                            opacity: 0.5,
+                            smoothFactor: 1,
+                            className: 'map-route-line',
+                        }).addTo(mapRef.current);
+
+                        polyline.on('mouseover', () => {
+                            onHoverEvent(ev.id);
+                            polyline.setStyle({ weight: 4, opacity: 0.7 });
+                            polyline.bringToFront();
+                        });
+                        polyline.on('mouseout', () => {
+                            onHoverEvent(null);
+                            polyline.setStyle({ weight: 3, opacity: 0.5 });
+                        });
+
+                        routesRef.current.set(ev.id, polyline);
+                    });
+                } else {
+                    // Simple mode: draw a quadratic bezier curve (no API call)
+                    const midLat = (startLatLng.lat + endLatLng.lat) / 2;
+                    const midLng = (startLatLng.lng + endLatLng.lng) / 2;
+                    const dLat = endLatLng.lat - startLatLng.lat;
+                    const dLng = endLatLng.lng - startLatLng.lng;
+                    const dist = Math.sqrt(dLat * dLat + dLng * dLng);
+                    // Control point offset perpendicular to the line, proportional to distance
+                    const offset = dist * 0.2;
+                    const ctrlLat = midLat + (-dLng / dist) * offset;
+                    const ctrlLng = midLng + (dLat / dist) * offset;
+
+                    const NUM_POINTS = 30;
+                    const curvePoints: L.LatLngTuple[] = [];
+                    for (let i = 0; i <= NUM_POINTS; i++) {
+                        const t = i / NUM_POINTS;
+                        const invT = 1 - t;
+                        const lat = invT * invT * startLatLng.lat + 2 * invT * t * ctrlLat + t * t * endLatLng.lat;
+                        const lng = invT * invT * startLatLng.lng + 2 * invT * t * ctrlLng + t * t * endLatLng.lng;
+                        curvePoints.push([lat, lng]);
+                    }
+
+                    const polyline = L.polyline(curvePoints, {
                         color,
                         weight: 3,
                         opacity: 0.5,
                         smoothFactor: 1,
+                        dashArray: '8, 6',
                         className: 'map-route-line',
-                    }).addTo(mapRef.current);
+                    }).addTo(map);
 
-                    // Hover on route → highlight event
                     polyline.on('mouseover', () => {
                         onHoverEvent(ev.id);
                         polyline.setStyle({ weight: 4, opacity: 0.7 });
@@ -264,7 +312,7 @@ const MapView: React.FC<MapViewProps> = ({ events, hoveredEventId, onHoverEvent 
                     });
 
                     routesRef.current.set(ev.id, polyline);
-                });
+                }
             }
         });
 

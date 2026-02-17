@@ -303,6 +303,11 @@ const EventBlock: React.FC<EventBlockProps> = ({
         </div>
     );
 
+    const handleToggleRouteMode = useCallback(() => {
+        const current = block.routeMode || 'simple';
+        onUpdate({ ...block, routeMode: current === 'simple' ? 'precise' : 'simple' });
+    }, [block, onUpdate]);
+
     // ─── Location zone (shared between inline and popout) ───
     const locationZone = (
         <div className="event-block-location-zone">
@@ -318,6 +323,29 @@ const EventBlock: React.FC<EventBlockProps> = ({
                     block.destination, destQuery, setDestQuery,
                     destResults, isDestSearching, destFocused, setDestFocused,
                     handleSelectDestination, handleClearDestination,
+                )}
+                {block.location && block.destination && (
+                    <button
+                        className={`route-mode-toggle ${(block.routeMode || 'simple') === 'precise' ? 'precise' : ''}`}
+                        onClick={(e) => { e.stopPropagation(); handleToggleRouteMode(); }}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        title={(block.routeMode || 'simple') === 'simple' ? 'Simple route (click for precise)' : 'Precise route (click for simple)'}
+                    >
+                        {(block.routeMode || 'simple') === 'simple' ? (
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M4 19C4 19 8 14 12 12C16 10 20 5 20 5" />
+                                <circle cx="4" cy="19" r="2" />
+                                <circle cx="20" cy="5" r="2" />
+                            </svg>
+                        ) : (
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M3 17C3 17 5 15 7 13C9 11 11 13 13 11C15 9 17 7 19 7" />
+                                <polyline points="15 7 19 7 19 11" />
+                                <circle cx="3" cy="17" r="2" />
+                            </svg>
+                        )}
+                    </button>
                 )}
             </div>
         </div>
