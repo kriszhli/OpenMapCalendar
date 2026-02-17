@@ -22,6 +22,10 @@
     height: 32px;
 }
 
+.control-group+.control-group {
+    margin-left: 8px;
+}
+
 .control-group.clickable {
     cursor: pointer;
     border-radius: 6px;
