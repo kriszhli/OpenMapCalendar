@@ -1,0 +1,121 @@
+.map-section {
+    width: 100%;
+    height: calc(100vh - var(--header-height) - 4px);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    position: relative;
+    box-shadow: var(--card-inner-shadow);
+    flex-shrink: 0;
+}
+
+.map-container {
+    width: 100%;
+    height: 100%;
+    background: var(--bg-elevated);
+}
+
+/* B&W grayscale on map tiles (Dark Mode) */
+.map-container .leaflet-tile-pane {
+    filter: grayscale(1) contrast(0.98) brightness(1.5);
+    transition: filter 0.3s ease;
+}
+
+/* Bright Mode - Reset filters */
+[data-theme='bright'] .map-container .leaflet-tile-pane {
+    filter: none;
+}
+
+/* Style Leaflet controls to match theme */
+.map-container .leaflet-control-zoom a {
+    background: var(--card) !important;
+    color: var(--text-high) !important;
+    border-color: var(--glow-accent) !important;
+}
+
+.map-container .leaflet-control-zoom a:hover {
+    background: var(--card-hover) !important;
+}
+
+.map-container .leaflet-control-attribution {
+    background: var(--bg-elevated) !important;
+    color: var(--text-low) !important;
+    font-size: 9px;
+    opacity: 0.8;
+}
+
+.map-container .leaflet-control-attribution a {
+    color: var(--text-med) !important;
+}
+
+/* Map pin highlight — opacity pulse only */
+.map-pin-highlight {
+    animation: pin-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pin-pulse {
+
+    0%,
+    100% {
+        opacity: 0.6;
+    }
+
+    50% {
+        opacity: 0.8;
+    }
+}
+
+/* Smooth transitions for map elements */
+.map-container .leaflet-interactive {
+    transition: stroke-opacity 0.2s ease-out,
+        stroke-width 0.2s ease-out,
+        fill-opacity 0.2s ease-out,
+        r 0.2s ease-out;
+}
+
+/* Route lines specifically */
+.map-route-line {
+    transition: stroke-opacity 0.3s ease-out,
+        stroke-width 0.3s ease-out !important;
+}
+
+/* Empty state overlay */
+.map-empty-state {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 800;
+    pointer-events: none;
+    background: var(--card);
+    /* Fallback */
+    background: rgba(10, 10, 14, 0.6);
+    /* Dark default */
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    transition: opacity 0.3s ease;
+}
+
+[data-theme='bright'] .map-empty-state {
+    background: rgba(255, 255, 255, 0.4);
+}
+
+.map-empty-text {
+    font-size: 18px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.95);
+    opacity: 1;
+    text-align: center;
+    max-width: 320px;
+    line-height: 1.4;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme='bright'] .map-empty-text {
+    color: var(--text-high);
+    text-shadow: 0 2px 8px rgba(255, 255, 255, 0.5);
+}

@@ -1,0 +1,65 @@
+.app-shell {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    overflow: hidden;
+    position: relative;
+}
+
+.app-main {
+    flex: 1;
+    padding: var(--gap);
+    padding-top: 4px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap);
+}
+
+/* Day view: horizontal layout — sidebar + card (25%) | map (75%) */
+/* Day view: horizontal layout — sidebar + card (25%) | map (75%) */
+.app-main.app-main-day {
+    flex-direction: row;
+    /* Allow scrolling on the main container so we can scroll down to see bottom popups */
+    overflow-y: auto;
+    overflow-x: hidden;
+    gap: var(--gap);
+}
+
+.app-calendar-section {
+    min-height: calc(100vh - var(--header-height) - var(--gap) * 2 - 4px);
+    flex-shrink: 0;
+    position: relative;
+    z-index: 20;
+    /* Ensure popups layer above map in Row/Grid view */
+}
+
+/* In Day view, calendar takes 25% width */
+.app-calendar-section.app-calendar-section-day {
+    width: 25%;
+    min-width: 220px;
+    max-width: 360px;
+    /* Remove fixed height so it can scroll */
+    min-height: 0;
+    height: auto;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 20;
+    /* Ensure popouts stack above map */
+}
+
+/* In Day view, map fills remaining space & stays sticky */
+.app-map-section-day {
+    flex: 1;
+    min-width: 0;
+    /* Sticky map so it stays visible while calendar scrolls */
+    position: sticky;
+    top: 4px;
+    /* Align with top of scroll area */
+    height: calc(100vh - var(--header-height) - var(--gap) * 2);
+    z-index: 1;
+}

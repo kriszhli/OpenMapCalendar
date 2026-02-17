@@ -1,0 +1,51 @@
+.drag-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: var(--z-drag);
+    cursor: crosshair;
+    touch-action: none;
+}
+
+/* Horizontal snap lines at drag start and end */
+.drag-snap-line {
+    position: absolute;
+    /* Move left edge past ruler labels to avoid overlap */
+    left: 64px;
+    right: 0;
+    height: 1px;
+    pointer-events: none;
+    background: var(--text-med);
+    /* Brighter */
+    box-shadow: 0 0 6px var(--glow-accent);
+    z-index: 1;
+}
+
+[data-theme='bright'] .drag-snap-line {
+    box-shadow: 0 0 6px rgba(0, 0, 0, 0.15);
+}
+
+.drag-selection {
+    position: absolute;
+    left: 64px;
+    /* Aligned with event blocks */
+    right: 6px;
+    border-radius: var(--radius-md);
+    pointer-events: none;
+    overflow: hidden;
+}
+
+.drag-selection-inner {
+    width: 100%;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--glow-accent);
+    border: 1px solid var(--text-ultra-low);
+}
+
+[data-theme='bright'] .drag-selection-inner {
+    background: rgba(0, 0, 0, 0.05);
+    border-color: rgba(0, 0, 0, 0.1);
+}

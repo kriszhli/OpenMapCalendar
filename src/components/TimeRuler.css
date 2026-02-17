@@ -1,0 +1,72 @@
+.time-ruler {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 52px;
+    height: 100%;
+    z-index: 2;
+    pointer-events: none;
+}
+
+.time-ruler svg {
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+}
+
+.ruler-label {
+    fill: var(--text-med);
+    font-size: 10px;
+    font-weight: 500;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    letter-spacing: 0.02em;
+    transition: fill 0.2s ease, font-size 0.2s ease, font-weight 0.2s ease;
+    user-select: none;
+}
+
+/* Half-hour labels hidden by default, shown on hover/drag */
+.ruler-label.half-hour {
+    fill: var(--text-low);
+    font-size: 9px;
+    opacity: 0;
+    transition: opacity 0.2s ease, fill 0.2s ease, font-size 0.2s ease;
+}
+
+.ruler-label.half-hour.hovered,
+.ruler-label.half-hour.drag-active {
+    opacity: 1;
+}
+
+.ruler-label.hovered {
+    fill: var(--text-high);
+    font-size: 11px;
+    font-weight: 600;
+}
+
+/* When a block's start or end aligns with this label */
+.ruler-label.event-boundary {
+    fill: var(--text-high);
+    font-size: 12px;
+    font-weight: 700;
+    opacity: 1;
+    /* Ensure visible even if it's a half-hour */
+    filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.5));
+}
+
+[data-theme='bright'] .ruler-label.event-boundary {
+    filter: drop-shadow(0 0 2px rgba(255, 255, 255, 0.5));
+}
+
+/* When a drag snap line aligns with this label */
+.ruler-label.drag-active {
+    fill: var(--text-high);
+    font-size: 12px;
+    font-weight: 700;
+    opacity: 1;
+    /* Ensure visible */
+    filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.3));
+}
+
+[data-theme='bright'] .ruler-label.drag-active {
+    filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.2));
+}

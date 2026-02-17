@@ -1,0 +1,194 @@
+.top-controls {
+    position: sticky;
+    top: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-elevated);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--glow-accent);
+    padding: 8px 24px;
+    pointer-events: auto;
+    z-index: var(--z-header);
+    gap: 0;
+}
+
+.control-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    position: relative;
+    height: 32px;
+}
+
+.control-group.clickable {
+    cursor: pointer;
+    border-radius: 6px;
+    transition: background 0.2s ease;
+}
+
+.control-group.clickable:hover .custom-control-container {
+    background: var(--card-hover);
+    border-color: var(--text-ultra-low);
+}
+
+.control-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-med);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    user-select: none;
+}
+
+.control-divider {
+    width: 1px;
+    height: 16px;
+    background: var(--text-ultra-low);
+    margin: 0 12px;
+}
+
+/* ─── UNIFIED CONTROL CONTAINER ─── */
+
+.custom-control-container {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--card);
+    border: 1px solid var(--glow-accent);
+    border-radius: 8px;
+    padding: 0 6px 0 12px;
+    height: 30px;
+    transition: all 0.2s ease;
+    min-width: 60px;
+}
+
+/* Date control specific */
+.custom-control-container.date-control {
+    padding: 0 6px 0 12px;
+    justify-content: space-between;
+    position: relative;
+    min-width: 90px;
+}
+
+.date-value {
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 2px 4px;
+    transition: background 0.15s ease;
+}
+
+.date-value:hover {
+    background: var(--glow-accent);
+}
+
+.control-value {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-high);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.hidden-date-input {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+    color-scheme: dark;
+}
+
+.control-arrows {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    height: 100%;
+    margin-left: 6px;
+    gap: 2px;
+}
+
+.control-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    padding: 2px;
+    color: var(--text-med);
+    cursor: pointer;
+    transition: color 0.2s;
+    line-height: 0;
+}
+
+.control-arrow:hover {
+    color: var(--text-high);
+}
+
+.control-arrow svg {
+    display: block;
+}
+
+/* ─── View Toggle (3 buttons) ─── */
+.view-toggle {
+    display: flex;
+    background: var(--card);
+    padding: 3px;
+    border-radius: 20px;
+    position: relative;
+    margin-left: 8px;
+    border: 1px solid var(--glow-accent);
+}
+
+.view-toggle-indicator {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    background: var(--text-ultra-low);
+    border-radius: 16px;
+    z-index: 1;
+}
+
+.view-toggle-btn {
+    position: relative;
+    z-index: 2;
+    background: none;
+    border: none;
+    padding: 4px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-med);
+    cursor: pointer;
+    transition: color 0.2s ease;
+    border-radius: 16px;
+}
+
+.view-toggle-btn.active {
+    color: var(--text-high);
+}
+
+/* Theme Toggle Button */
+.theme-toggle-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--card);
+    border: 1px solid var(--glow-accent);
+    color: var(--text-med);
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    margin-left: auto;
+    /* Push to far right */
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.theme-toggle-btn:hover {
+    color: var(--text-high);
+    background: var(--card-hover);
+    border-color: var(--text-low);
+}

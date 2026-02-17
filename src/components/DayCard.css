@@ -1,0 +1,97 @@
+.day-card {
+    position: relative;
+    background: var(--card);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--card-inner-shadow);
+    overflow: visible;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    transition: background 0.3s ease;
+}
+
+.day-card:hover {
+    background: var(--card-hover);
+}
+
+.day-card-header {
+    padding: 12px 14px 8px 14px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    z-index: 3;
+    position: relative;
+}
+
+/* Centered header with nav arrows (Day view) */
+.day-card-header-nav {
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 12px 14px 8px 14px;
+}
+
+.day-card-header-center {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.day-nav-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: var(--glow-accent);
+    border-radius: 8px;
+    color: var(--text-med);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.day-nav-arrow:hover {
+    background: var(--text-ultra-low);
+    color: var(--text-high);
+}
+
+.day-card-number {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text-high);
+    line-height: 1;
+}
+
+.day-card-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-low);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.day-card-body {
+    flex: 1;
+    position: relative;
+    min-height: 0;
+    overflow: visible;
+}
+
+/* Full-width hover line spanning the entire card */
+.day-card-hover-line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 1px;
+    pointer-events: none;
+    z-index: 3;
+    background: linear-gradient(90deg,
+            transparent 0%,
+            var(--text-ultra-low) 10%,
+            var(--text-low) 50%,
+            var(--text-ultra-low) 90%,
+            transparent 100%);
+    box-shadow: 0 0 8px var(--glow-soft);
+    transition: top 0.1s ease;
+}

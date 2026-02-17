@@ -1,0 +1,66 @@
+.day-sidebar {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 8px 0;
+    flex-shrink: 0;
+}
+
+.day-sidebar-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: var(--bg-elevated);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--glow-accent);
+    border-radius: 20px;
+    padding: 4px;
+    max-height: calc(100vh - var(--header-height) - 40px);
+    overflow-y: auto;
+}
+
+/* Hide scrollbar but keep scrollability */
+.day-sidebar-list::-webkit-scrollbar {
+    width: 0;
+}
+
+.day-sidebar-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border: none;
+    background: none;
+    border-radius: 14px;
+    cursor: pointer;
+    transition: color 0.2s ease;
+    padding: 0;
+}
+
+.day-sidebar-indicator {
+    position: absolute;
+    inset: 0;
+    background: var(--glow-accent);
+    border-radius: 14px;
+    z-index: 0;
+}
+
+.day-sidebar-number {
+    position: relative;
+    z-index: 1;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-med);
+    font-variant-numeric: tabular-nums;
+}
+
+.day-sidebar-item.active .day-sidebar-number {
+    color: var(--text-high);
+}
+
+.day-sidebar-item:hover:not(.active) .day-sidebar-number {
+    color: var(--text-high);
+    opacity: 0.7;
+}

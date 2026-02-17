@@ -1,0 +1,369 @@
+.event-block {
+    position: absolute;
+    left: 64px;
+    right: 6px;
+    border-radius: var(--radius-md);
+    z-index: var(--z-block);
+    overflow: visible;
+    cursor: default;
+    display: flex;
+    flex-direction: column;
+    transition: box-shadow 0.3s ease, transform 0.2s ease;
+}
+
+/* ─── Cross-highlight glow from map hover ─── */
+.event-block.highlighted {
+    box-shadow: 0 0 16px var(--glow-accent), var(--shadow-active);
+    transform: scale(1.015);
+    z-index: calc(var(--z-block) + 2);
+}
+
+/* ─── Delete button: red circle outside top-right corner ─── */
+.event-block-delete {
+    position: absolute;
+    top: -8px;
+    right: -4px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: rgba(180, 70, 65, 0.85);
+    /* Keep red */
+    color: #fff;
+    /* Always white icon */
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid var(--bg);
+    cursor: pointer;
+    z-index: calc(var(--z-block) + 1);
+    padding: 0;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+    transition: background 0.15s ease;
+}
+
+.event-block-delete:hover {
+    background: rgba(160, 55, 50, 0.95);
+}
+
+.event-block:hover {
+    box-shadow: var(--shadow-active);
+}
+
+/* ─── Title zone: top strip, click anywhere to type title ─── */
+.event-block-title-zone {
+    padding: 10px 12px 6px 12px;
+    cursor: text;
+    border-bottom: 1px solid var(--glow-soft);
+    transition: background 0.2s ease, border-color 0.2s ease;
+    flex-shrink: 0;
+}
+
+.event-block-title-zone:hover {
+    background: var(--glow-soft);
+}
+
+.event-block-title-zone.focused {
+    background: var(--glow-soft);
+    border-bottom-color: var(--glow-accent);
+}
+
+.event-block-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-high);
+    border: none;
+    outline: none;
+    background: none;
+    width: 100%;
+    padding: 0;
+    line-height: 1.3;
+    cursor: text;
+}
+
+/* In bright mode, ensure text is dark on colored card backgrounds */
+[data-theme='bright'] .event-block-title {
+    color: rgba(255, 255, 255, 0.95);
+    /* Keep white text on colored events in bright mode? Or should events be light? User said "texts on event cards are clearly still white", implying they SHOULD be dark if the card background is white, but event cards have specific colors (blue, sage, etc). Usually colored cards keep white text. Let's check user request again. "numbers on day cards and event cards should be dark". It implies event cards might change background or user expects dark text on the colored background. */
+    /* Re-reading user request: "In Bright Mode... numbers on the day cards and event cards should be dark". */
+    /* If event cards retain their color (e.g. Blue #5B7FBF), dark text might have poor contrast. */
+    /* However, if the user WANTS dark text, I should provide it, or perhaps the event backgrounds become lighter in bright mode? */
+    /* Implementation decision: For now, map the text variable. If contrast is bad, we might need to lighten the event colors in bright mode. */
+    color: rgba(0, 0, 0, 0.8);
+}
+
+/* Wait, the event backgrounds are set inline via style={{ backgroundColor: block.color }}. */
+/* If the user wants dark text on event cards, I should set color to var(--text-high) which is dark in bright mode. */
+
+
+.event-block-title::placeholder {
+    color: var(--text-low);
+    transition: opacity 0.2s ease;
+}
+
+.event-block-title:focus::placeholder {
+    opacity: 0.5;
+}
+
+/* ─── Location zone ─── */
+.event-block-location-zone {
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--glow-soft);
+    flex-shrink: 0;
+}
+
+.location-row {
+    display: flex;
+    gap: 4px;
+}
+
+.location-input-col {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px;
+    border-radius: var(--radius-sm, 6px);
+    position: relative;
+    transition: background 0.2s ease;
+}
+
+.location-input-col.focused {
+    background: var(--glow-soft);
+}
+
+.location-icon {
+    font-size: 10px;
+    opacity: 0.5;
+    flex-shrink: 0;
+    color: var(--text-high);
+}
+
+.event-block-location-input {
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--text-med);
+    border: none;
+    outline: none;
+    background: none;
+    width: 100%;
+    padding: 0;
+    line-height: 1.4;
+    cursor: text;
+}
+
+[data-theme='bright'] .event-block-location-input {
+    color: rgba(0, 0, 0, 0.7);
+}
+
+
+.event-block-location-input::placeholder {
+    color: var(--text-low);
+}
+
+.location-display {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex: 1;
+    min-width: 0;
+}
+
+.location-name {
+    font-size: 10px;
+    color: var(--text-med);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+[data-theme='bright'] .location-name {
+    color: rgba(0, 0, 0, 0.65);
+}
+
+
+.location-clear {
+    background: none;
+    border: none;
+    color: var(--text-low);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 0 1px;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: color 0.15s ease;
+}
+
+.location-clear:hover {
+    color: var(--text-high);
+}
+
+/* ─── Location search dropdown ─── */
+.location-search-results {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: var(--card);
+    border: 1px solid var(--glow-accent);
+    border-radius: var(--radius-md);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    z-index: 1000;
+    max-height: 180px;
+    overflow-y: auto;
+    min-width: 220px;
+}
+
+.location-result {
+    display: block;
+    width: 100%;
+    padding: 8px 12px;
+    font-size: 11px;
+    color: var(--text-med);
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--glow-soft);
+    cursor: pointer;
+    text-align: left;
+    line-height: 1.4;
+    transition: background 0.15s ease;
+}
+
+.location-result:hover {
+    background: var(--card-hover);
+    color: var(--text-high);
+}
+
+.location-result:last-child {
+    border-bottom: none;
+}
+
+.location-result.searching {
+    color: var(--text-low);
+    cursor: default;
+    font-style: italic;
+}
+
+/* ─── Body zone: fills rest of the block, click anywhere to type notes ─── */
+.event-block-body-zone {
+    flex: 1;
+    padding: 6px 12px 10px 12px;
+    cursor: text;
+    min-height: 0;
+    transition: background 0.2s ease;
+}
+
+.event-block-body-zone:hover {
+    background: var(--glow-soft);
+}
+
+.event-block-body-zone.focused {
+    background: var(--glow-soft);
+}
+
+.event-block-description {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--text-med);
+    border: none;
+    outline: none;
+    background: none;
+    width: 100%;
+    padding: 0;
+    resize: none;
+    line-height: 1.5;
+    min-height: 16px;
+    cursor: text;
+}
+
+[data-theme='bright'] .event-block-description {
+    color: rgba(0, 0, 0, 0.6);
+}
+
+.event-block-description::placeholder {
+    color: var(--text-low);
+    transition: opacity 0.2s ease;
+}
+
+.event-block-description:focus::placeholder {
+    opacity: 0.3;
+}
+
+/* Full-screen overlay to block interactions while native color picker is open */
+.color-picker-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: calc(var(--z-palette) - 1);
+    background: transparent;
+    cursor: default;
+}
+
+/* ─── Compact event block (< 2hr): title only ─── */
+.event-block.compact {
+    cursor: pointer;
+    overflow: visible;
+}
+
+.event-block-compact-title {
+    padding: 6px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-high);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 100%;
+}
+
+[data-theme='bright'] .event-block-compact-title {
+    color: rgba(0, 0, 0, 0.9);
+}
+
+/* Half-hour block: smaller title */
+.event-block.half-hour .event-block-compact-title {
+    font-size: 10px;
+    font-weight: 500;
+    padding: 2px 8px;
+}
+
+.compact-location-badge {
+    font-size: 9px;
+    opacity: 0.5;
+    flex-shrink: 0;
+}
+
+/* ─── Popout edit panel ─── */
+.event-popout {
+    position: absolute;
+    left: calc(100% + 8px);
+    width: 280px;
+    min-height: 160px;
+    border-radius: var(--radius-lg);
+    z-index: calc(var(--z-block) + 10);
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--glow-accent);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5), 0 0 1px var(--glow-accent);
+    backdrop-filter: blur(16px);
+    overflow: visible;
+    background: var(--card);
+    /* Ensure popout has bg */
+}
+
+.event-popout .event-block-title-zone {
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.event-popout .event-block-body-zone {
+    min-height: 60px;
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
