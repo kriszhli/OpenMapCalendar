@@ -1,47 +1,94 @@
-# Open Map Calender
+# Open Map Calendar
 
-An interactive calendar and map-based trip planner application. Easily schedule events, plan travel, and visualize your itinerary on an interactive map.
+Interactive calendar + map planner for multi-day scheduling, with shared file-backed persistence for LAN collaboration.
 
-## Features
+## What It Does
 
-- **Interactive Calendar**: Drag-and-drop scheduling with day, row, and grid views.
-- **Map Integration**: Visualize events on a map, plan routes between locations, and see travel times.
-- **Dark/Bright Mode**: seamlessly switch between dark and bright themes for comfortable viewing in any environment.
-- **Drag Selection**: Intuitive drag-and-drop interface for creating and modifying time blocks.
-- **Responsive Design**: Works well on various screen sizes.
+- Create, edit, and delete time blocks across days.
+- Switch between `row`, `grid`, and `day` views.
+- Add event locations/destinations and visualize routes on the map.
+- Persist all calendar state to a shared JSON file (`calendar-data.json`):
+  - start date
+  - number of days
+  - start/end hours
+  - view mode
+  - all events and route/location data
+- Live sync between connected clients (same hosted instance).
 
-## Technologies Used
+## Tech Stack
 
-- **React**: For building the user interface.
-- **TypeScript**: For type safety and better developer experience.
-- **Vite**: For fast development and build tooling.
-- **Leaflet**: For interactive maps.
-- **Framer Motion**: For smooth animations and transitions.
+- React + TypeScript
+- Vite
+- Express
+- Leaflet
+- Framer Motion
 
-## Getting Started
+## Project Structure
 
-1.  Clone the repository:
-    ```bash
-    git clone https://github.com/yourusername/open-map-calender.git
-    cd open-map-calender
-    ```
+- `/Users/kris/AI/Interactive_Calender/src` - React frontend
+- `/Users/kris/AI/Interactive_Calender/server.js` - Express API + static hosting
+- `/Users/kris/AI/Interactive_Calender/calendar-data.json` - persisted shared calendar state
+- `/Users/kris/AI/Interactive_Calender/scripts/dev.js` - runs API server + Vite together in dev
 
-2.  Install dependencies:
-    ```bash
-    npm install
-    ```
+## Local Development
 
-3.  Start the development server:
-    ```bash
-    npm run dev
-    ```
+1. Install dependencies:
+```bash
+npm install
+```
 
-4.  Open your browser and navigate to `http://localhost:5173`.
+2. Run frontend + API together:
+```bash
+npm run dev
+```
 
-## Contributing
+3. Open:
+```text
+http://localhost:5173
+```
 
-Contributions are welcome! Please open an issue or submit a pull request for any improvements or bug fixes.
+Notes:
+- Vite proxies `/api/*` to `http://localhost:3000`.
+- `npm run dev` starts both processes so proxy errors are avoided.
 
-## License
+## Production/LAN Hosting
 
-This project is licensed under the MIT License.
+Build and serve the app from Express:
+
+```bash
+npm run host
+```
+
+Server listens on `0.0.0.0:3000` and prints LAN URLs, for example:
+
+```text
+http://192.168.1.15:3000
+```
+
+Anyone opening that URL on your network edits the same shared calendar file.
+
+## Scripts
+
+- `npm run dev` - start API server + Vite dev server
+- `npm run dev:client` - start Vite only
+- `npm run start` - run Express server
+- `npm run build` - TypeScript build + Vite build
+- `npm run host` - build then run Express server
+- `npm run lint` - run ESLint
+
+## Data Model
+
+Persisted state includes:
+
+- `numDays`
+- `startDate` (ISO string)
+- `startHour`
+- `endHour`
+- `viewMode`
+- `events` keyed by day index, including block metadata and optional route points (`location`, `destination`)
+
+## GitHub
+
+Remote:
+
+- `origin`: [https://github.com/kriszhli/OpenMapCalender.git](https://github.com/kriszhli/OpenMapCalender.git)

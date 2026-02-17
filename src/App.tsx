@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import type { ViewMode, TimeBlock } from './types';
 import AppShell from './components/AppShell';
 import TopControls from './components/TopControls';
@@ -7,7 +7,7 @@ import DaySidebar from './components/DaySidebar';
 import MapView from './components/MapView';
 import './App.css';
 
-const STORAGE_KEY = 'calendar-state';
+
 
 interface CalendarState {
   numDays: number;
@@ -18,49 +18,159 @@ interface CalendarState {
   events: Record<number, TimeBlock[]>;
 }
 
-function loadState(): Partial<CalendarState> {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw) as Partial<CalendarState>;
-  } catch {
-    return {};
-  }
+const DEFAULT_CALENDAR_STATE: CalendarState = {
+  numDays: 5,
+  startDate: new Date().toISOString(),
+  startHour: 7,
+  endHour: 22,
+  viewMode: 'row',
+  events: {},
+};
+
+interface CalendarResponse {
+  state: CalendarState;
+  revision: number;
 }
 
-function saveState(state: CalendarState) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // ignore quota errors
-  }
+function parseCalendarResponse(raw: unknown): CalendarResponse {
+  const data = raw as Partial<CalendarState> & { state?: Partial<CalendarState>; revision?: number };
+  const source = data.state ?? data;
+  const parsedDate = typeof source.startDate === 'string' ? new Date(source.startDate) : null;
+
+  const state: CalendarState = {
+    numDays: Number.isFinite(source.numDays) && source.numDays! > 0 ? source.numDays! : DEFAULT_CALENDAR_STATE.numDays,
+    startDate: parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate.toISOString() : DEFAULT_CALENDAR_STATE.startDate,
+    startHour: Number.isFinite(source.startHour) ? source.startHour! : DEFAULT_CALENDAR_STATE.startHour,
+    endHour: Number.isFinite(source.endHour) ? source.endHour! : DEFAULT_CALENDAR_STATE.endHour,
+    viewMode: source.viewMode === 'grid' || source.viewMode === 'day' || source.viewMode === 'row' ? source.viewMode : DEFAULT_CALENDAR_STATE.viewMode,
+    events: typeof source.events === 'object' && source.events !== null ? source.events as Record<number, TimeBlock[]> : {},
+  };
+
+  return {
+    state,
+    revision: Number.isInteger(data.revision) ? data.revision! : 0,
+  };
 }
 
 function App() {
-  const saved = loadState();
-
-  const [numDays, setNumDays] = useState(saved.numDays ?? 5);
-  const [startDate, setStartDate] = useState(() =>
-    saved.startDate ? new Date(saved.startDate) : new Date()
-  );
-  const [startHour, setStartHour] = useState(saved.startHour ?? 7);
-  const [endHour, setEndHour] = useState(saved.endHour ?? 22);
-  const [viewMode, setViewMode] = useState<ViewMode>(saved.viewMode ?? 'row');
-  const [events, setEvents] = useState<Record<number, TimeBlock[]>>(saved.events ?? {});
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [apiOnline, setApiOnline] = useState(false);
+  const [numDays, setNumDays] = useState(5);
+  const [startDate, setStartDate] = useState(new Date());
+  const [startHour, setStartHour] = useState(7);
+  const [endHour, setEndHour] = useState(22);
+  const [viewMode, setViewMode] = useState<ViewMode>('row');
+  const [events, setEvents] = useState<Record<number, TimeBlock[]>>({});
   const [hoveredEventId, setHoveredEventId] = useState<string | null>(null);
   const [dayViewIndex, setDayViewIndex] = useState(0);
+  const serverRevisionRef = useRef(0);
+  const baseStateRef = useRef<CalendarState>(DEFAULT_CALENDAR_STATE);
+  const saveSeqRef = useRef(0);
 
-  // Persist to localStorage on every state change
+  const applyCalendarState = useCallback((state: CalendarState) => {
+    setNumDays(state.numDays);
+    setStartDate(new Date(state.startDate));
+    setStartHour(state.startHour);
+    setEndHour(state.endHour);
+    setViewMode(state.viewMode);
+    setEvents(state.events);
+  }, []);
+
+  // Load initial state from server
   useEffect(() => {
-    saveState({
+    fetch('/api/calendar')
+      .then((res) => {
+        if (!res.ok) throw new Error('Failed to load');
+        return res.json();
+      })
+      .then((data) => {
+        const parsed = parseCalendarResponse(data);
+        serverRevisionRef.current = parsed.revision;
+        baseStateRef.current = parsed.state;
+        applyCalendarState(parsed.state);
+        setApiOnline(true);
+      })
+      .catch((err) => {
+        console.error('Failed to load calendar data:', err);
+        setApiOnline(false);
+      })
+      .finally(() => {
+        setIsLoaded(true);
+      });
+  }, [applyCalendarState]);
+
+  // Pull remote updates so all connected users stay in sync.
+  useEffect(() => {
+    if (!isLoaded) return;
+
+    const intervalMs = apiOnline ? 1000 : 5000;
+    const intervalId = window.setInterval(() => {
+      fetch('/api/calendar')
+        .then((res) => {
+          if (!res.ok) throw new Error('Failed to sync');
+          return res.json();
+        })
+        .then((data) => {
+          const parsed = parseCalendarResponse(data);
+          setApiOnline(true);
+          if (parsed.revision <= serverRevisionRef.current) return;
+          serverRevisionRef.current = parsed.revision;
+          baseStateRef.current = parsed.state;
+          applyCalendarState(parsed.state);
+        })
+        .catch((err) => {
+          if (apiOnline) {
+            console.error('Calendar API is unreachable:', err);
+          }
+          setApiOnline(false);
+        });
+    }, intervalMs);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isLoaded, apiOnline, applyCalendarState]);
+
+  // Persist to server on every state change
+  useEffect(() => {
+    if (!isLoaded || !apiOnline) return;
+
+    const state: CalendarState = {
       numDays,
       startDate: startDate.toISOString(),
       startHour,
       endHour,
       viewMode,
       events,
-    });
-  }, [numDays, startDate, startHour, endHour, viewMode, events]);
+    };
+    const saveSeq = saveSeqRef.current + 1;
+    saveSeqRef.current = saveSeq;
+
+    fetch('/api/calendar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        state,
+        baseState: baseStateRef.current,
+        baseRevision: serverRevisionRef.current,
+      }),
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error('Failed to save');
+        return res.json();
+      })
+      .then((data) => {
+        if (saveSeq !== saveSeqRef.current) return;
+        const parsed = parseCalendarResponse(data);
+        setApiOnline(true);
+        serverRevisionRef.current = parsed.revision;
+        baseStateRef.current = parsed.state;
+      })
+      .catch((err) => {
+        console.error('Failed to save:', err);
+        setApiOnline(false);
+      });
+  }, [isLoaded, apiOnline, numDays, startDate, startHour, endHour, viewMode, events]);
 
   // Clamp dayViewIndex when numDays or viewMode changes
   useEffect(() => {
@@ -123,6 +233,22 @@ function App() {
   }, [viewMode, dayViewIndex, events]);
 
   const isDayView = viewMode === 'day';
+
+  if (!isLoaded) {
+    return (
+      <AppShell>
+        <div style={{
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          height: '100vh',
+          color: 'var(--text-med)'
+        }}>
+          Loading calendar...
+        </div>
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell>
