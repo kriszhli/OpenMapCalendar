@@ -61,6 +61,7 @@ const EventBlock: React.FC<EventBlockProps> = ({
     const isHalfHour = durationMinutes <= 30;
     const hasSingleEndpoint = Boolean(block.location) !== Boolean(block.destination);
     const timeRangeLabel = `${minutesToTime(block.startMinutes)} - ${minutesToTime(block.endMinutes)}`;
+    const currentRouteMode = block.routeMode || 'simple';
 
     // Show palette when editing or when no color chosen yet
     const isEditing = titleFocused || bodyFocused || locationFocused || destFocused || colorPickerOpen || showEditPopout;
@@ -306,9 +307,14 @@ const EventBlock: React.FC<EventBlockProps> = ({
     );
 
     const handleToggleRouteMode = useCallback(() => {
-        const current = block.routeMode || 'simple';
-        onUpdate({ ...block, routeMode: current === 'simple' ? 'precise' : 'simple' });
-    }, [block, onUpdate]);
+        const nextMode =
+            currentRouteMode === 'simple'
+                ? 'precise'
+                : currentRouteMode === 'precise'
+                    ? 'hidden'
+                    : 'simple';
+        onUpdate({ ...block, routeMode: nextMode });
+    }, [block, currentRouteMode, onUpdate]);
 
     // ─── Location zone (shared between inline and popout) ───
     const locationZone = (
@@ -326,25 +332,36 @@ const EventBlock: React.FC<EventBlockProps> = ({
                     destResults, isDestSearching, destFocused, setDestFocused,
                     handleSelectDestination, handleClearDestination,
                 )}
-                {block.location && block.destination && (
+                {(block.location || block.destination) && (
                     <button
-                        className={`route-mode-toggle ${(block.routeMode || 'simple') === 'precise' ? 'precise' : ''}`}
+                        className={`route-mode-toggle ${currentRouteMode === 'precise' ? 'precise' : ''} ${currentRouteMode === 'hidden' ? 'hidden' : ''}`}
                         onClick={(e) => { e.stopPropagation(); handleToggleRouteMode(); }}
                         onMouseDown={(e) => e.stopPropagation()}
                         onPointerDown={(e) => e.stopPropagation()}
-                        title={(block.routeMode || 'simple') === 'simple' ? 'Simple route (click for precise)' : 'Precise route (click for simple)'}
+                        title={
+                            currentRouteMode === 'simple'
+                                ? 'Simple route (click for precise)'
+                                : currentRouteMode === 'precise'
+                                    ? 'Precise route (click to hide)'
+                                    : 'Route hidden (click for simple)'
+                        }
                     >
-                        {(block.routeMode || 'simple') === 'simple' ? (
+                        {currentRouteMode === 'simple' ? (
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                 <path d="M4 19C4 19 8 14 12 12C16 10 20 5 20 5" />
                                 <circle cx="4" cy="19" r="2" />
                                 <circle cx="20" cy="5" r="2" />
                             </svg>
-                        ) : (
+                        ) : currentRouteMode === 'precise' ? (
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                 <path d="M3 17C3 17 5 15 7 13C9 11 11 13 13 11C15 9 17 7 19 7" />
                                 <polyline points="15 7 19 7 19 11" />
                                 <circle cx="3" cy="17" r="2" />
+                            </svg>
+                        ) : (
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M4 19C4 19 8 14 12 12C16 10 20 5 20 5" />
+                                <line x1="5" y1="5" x2="19" y2="19" />
                             </svg>
                         )}
                     </button>

@@ -410,3 +410,9 @@
     color: var(--text-med);
     background: var(--glow-accent);
 }
+
+.route-mode-toggle.hidden {
+    color: rgba(190, 90, 90, 0.95);
+    background: rgba(190, 90, 90, 0.12);
+    border-color: rgba(190, 90, 90, 0.45);
+}
