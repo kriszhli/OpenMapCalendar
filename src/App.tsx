@@ -411,6 +411,7 @@ function App() {
               events={mapEvents}
               hoveredEventId={hoveredEventId}
               onHoverEvent={handleHoverEvent}
+              preciseZoomEnabled
             />
           </div>
         ) : (
@@ -418,6 +419,7 @@ function App() {
             events={mapEvents}
             hoveredEventId={hoveredEventId}
             onHoverEvent={handleHoverEvent}
+            preciseZoomEnabled={false}
           />
         )}
       </div>

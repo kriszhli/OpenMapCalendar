@@ -9,6 +9,7 @@ interface MapViewProps {
     events: Record<number, TimeBlock[]>;
     hoveredEventId: string | null;
     onHoverEvent: (id: string | null) => void;
+    preciseZoomEnabled?: boolean;
 }
 
 const DEFAULT_CENTER: L.LatLngTuple = [30, 0];
@@ -42,22 +43,24 @@ async function fetchRoute(
     return null;
 }
 
-const MapView: React.FC<MapViewProps> = ({ events, hoveredEventId, onHoverEvent }) => {
+const MapView: React.FC<MapViewProps> = ({ events, hoveredEventId, onHoverEvent, preciseZoomEnabled = false }) => {
     const mapRef = useRef<L.Map | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const markersRef = useRef<Map<string, L.CircleMarker[]>>(new Map());
     const glowMarkersRef = useRef<Map<string, L.CircleMarker[]>>(new Map());
     const routesRef = useRef<Map<string, L.Polyline>>(new Map());
 
-    // Flatten all events with any location data
-    const locatedEvents = useMemo(() => {
-        const result: TimeBlock[] = [];
-        for (const dayEvents of Object.values(events)) {
-            for (const ev of dayEvents) {
-                if (ev.location || ev.destination) result.push(ev);
-            }
-        }
-        return result;
+    // Group located events by day and sort by start time.
+    const dayLocatedEvents = useMemo(() => {
+        return Object.entries(events)
+            .map(([dayIndex, dayEvents]) => ({
+                dayIndex: Number(dayIndex),
+                events: [...dayEvents]
+                    .filter((ev) => ev.location || ev.destination)
+                    .sort((a, b) => a.startMinutes - b.startMinutes),
+            }))
+            .filter((group) => group.events.length > 0)
+            .sort((a, b) => a.dayIndex - b.dayIndex);
     }, [events]);
 
     // Initialize map
@@ -70,6 +73,9 @@ const MapView: React.FC<MapViewProps> = ({ events, hoveredEventId, onHoverEvent 
             zoomControl: true,
             attributionControl: true,
             scrollWheelZoom: false,
+            touchZoom: false,
+            zoomSnap: 1,
+            zoomDelta: 1,
         });
 
         const updateTileLayers = () => {
@@ -127,6 +133,23 @@ const MapView: React.FC<MapViewProps> = ({ events, hoveredEventId, onHoverEvent 
             mapRef.current = null;
         };
     }, []);
+
+    useEffect(() => {
+        const map = mapRef.current;
+        if (!map) return;
+
+        if (preciseZoomEnabled) {
+            map.scrollWheelZoom.enable();
+            map.touchZoom.enable();
+            map.options.zoomSnap = 0.25;
+            map.options.zoomDelta = 0.25;
+        } else {
+            map.scrollWheelZoom.disable();
+            map.touchZoom.disable();
+            map.options.zoomSnap = 1;
+            map.options.zoomDelta = 1;
+        }
+    }, [preciseZoomEnabled]);
 
     // Handle hover from calendar → highlight pins + route on map
     const handleCalendarHover = useCallback((eventId: string | null) => {
@@ -223,108 +246,26 @@ const MapView: React.FC<MapViewProps> = ({ events, hoveredEventId, onHoverEvent 
             return { marker, glow };
         };
 
-        locatedEvents.forEach((ev) => {
-            const color = ev.color || '#5B7FBF';
-            const eventMarkers: L.CircleMarker[] = [];
-            const eventGlows: L.CircleMarker[] = [];
-            const startTimeLabel = minutesToTime(ev.startMinutes);
-            const endTimeLabel = minutesToTime(ev.endMinutes);
-            const eventTitle = (ev.title || 'Untitled').trim();
-
-            // Start pin
-            if (ev.location) {
-                const latlng = L.latLng(ev.location.lat, ev.location.lng);
-                bounds.push(latlng);
-                const { marker, glow } = createPin(
-                    latlng,
-                    color,
-                    ev.id,
-                    `${startTimeLabel} | ${eventTitle}`
-                );
-                eventMarkers.push(marker);
-                eventGlows.push(glow);
-            }
-
-            // Destination pin
-            if (ev.destination) {
-                const latlng = L.latLng(ev.destination.lat, ev.destination.lng);
-                bounds.push(latlng);
-                const { marker, glow } = createPin(
-                    latlng,
-                    color,
-                    ev.id,
-                    `${endTimeLabel} | ${eventTitle}`
-                );
-                eventMarkers.push(marker);
-                eventGlows.push(glow);
-            }
-
-            markersRef.current.set(ev.id, eventMarkers);
-            glowMarkersRef.current.set(ev.id, eventGlows);
-
-            // Draw route if both locations exist
-            if (ev.location && ev.destination) {
-                const startLatLng = L.latLng(ev.location.lat, ev.location.lng);
-                const endLatLng = L.latLng(ev.destination.lat, ev.destination.lng);
-                const mode = ev.routeMode || 'simple';
-
-                if (mode === 'precise') {
-                    // Precise mode: fetch OSRM route
-                    fetchRoute(
-                        ev.location.lat, ev.location.lng,
-                        ev.destination.lat, ev.destination.lng,
-                    ).then((coords) => {
-                        if (isCancelled || !coords || !mapRef.current) return;
-                        const polyline = L.polyline(coords, {
-                            color,
-                            weight: 3,
-                            opacity: 0.5,
-                            smoothFactor: 1,
-                            className: 'map-route-line',
-                        }).addTo(mapRef.current);
-
-                        polyline.on('mouseover', () => {
-                            onHoverEvent(ev.id);
-                            polyline.setStyle({ weight: 4, opacity: 0.7 });
-                            polyline.bringToFront();
-                        });
-                        polyline.on('mouseout', () => {
-                            onHoverEvent(null);
-                            polyline.setStyle({ weight: 3, opacity: 0.5 });
-                        });
-
-                        routesRef.current.set(ev.id, polyline);
-                    });
-                } else {
-                    // Simple mode: draw a quadratic bezier curve (no API call)
-                    const midLat = (startLatLng.lat + endLatLng.lat) / 2;
-                    const midLng = (startLatLng.lng + endLatLng.lng) / 2;
-                    const dLat = endLatLng.lat - startLatLng.lat;
-                    const dLng = endLatLng.lng - startLatLng.lng;
-                    const dist = Math.sqrt(dLat * dLat + dLng * dLng);
-                    // Control point offset perpendicular to the line, proportional to distance
-                    const offset = dist * 0.2;
-                    const ctrlLat = midLat + (-dLng / dist) * offset;
-                    const ctrlLng = midLng + (dLat / dist) * offset;
-
-                    const NUM_POINTS = 30;
-                    const curvePoints: L.LatLngTuple[] = [];
-                    for (let i = 0; i <= NUM_POINTS; i++) {
-                        const t = i / NUM_POINTS;
-                        const invT = 1 - t;
-                        const lat = invT * invT * startLatLng.lat + 2 * invT * t * ctrlLat + t * t * endLatLng.lat;
-                        const lng = invT * invT * startLatLng.lng + 2 * invT * t * ctrlLng + t * t * endLatLng.lng;
-                        curvePoints.push([lat, lng]);
-                    }
-
-                    const polyline = L.polyline(curvePoints, {
+        const drawRoute = (
+            ev: TimeBlock,
+            color: string,
+            mode: 'simple' | 'precise',
+            startLatLng: L.LatLng,
+            endLatLng: L.LatLng
+        ) => {
+            if (mode === 'precise') {
+                fetchRoute(
+                    startLatLng.lat, startLatLng.lng,
+                    endLatLng.lat, endLatLng.lng,
+                ).then((coords) => {
+                    if (isCancelled || !coords || !mapRef.current) return;
+                    const polyline = L.polyline(coords, {
                         color,
                         weight: 3,
                         opacity: 0.5,
                         smoothFactor: 1,
-                        dashArray: '8, 6',
                         className: 'map-route-line',
-                    }).addTo(map);
+                    }).addTo(mapRef.current);
 
                     polyline.on('mouseover', () => {
                         onHoverEvent(ev.id);
@@ -337,8 +278,108 @@ const MapView: React.FC<MapViewProps> = ({ events, hoveredEventId, onHoverEvent 
                     });
 
                     routesRef.current.set(ev.id, polyline);
-                }
+                });
+                return;
             }
+
+            const midLat = (startLatLng.lat + endLatLng.lat) / 2;
+            const midLng = (startLatLng.lng + endLatLng.lng) / 2;
+            const dLat = endLatLng.lat - startLatLng.lat;
+            const dLng = endLatLng.lng - startLatLng.lng;
+            const dist = Math.sqrt(dLat * dLat + dLng * dLng) || 0.000001;
+            const offset = dist * 0.2;
+            const ctrlLat = midLat + (-dLng / dist) * offset;
+            const ctrlLng = midLng + (dLat / dist) * offset;
+
+            const NUM_POINTS = 30;
+            const curvePoints: L.LatLngTuple[] = [];
+            for (let i = 0; i <= NUM_POINTS; i++) {
+                const t = i / NUM_POINTS;
+                const invT = 1 - t;
+                const lat = invT * invT * startLatLng.lat + 2 * invT * t * ctrlLat + t * t * endLatLng.lat;
+                const lng = invT * invT * startLatLng.lng + 2 * invT * t * ctrlLng + t * t * endLatLng.lng;
+                curvePoints.push([lat, lng]);
+            }
+
+            const polyline = L.polyline(curvePoints, {
+                color,
+                weight: 3,
+                opacity: 0.5,
+                smoothFactor: 1,
+                dashArray: '8, 6',
+                className: 'map-route-line',
+            }).addTo(map);
+
+            polyline.on('mouseover', () => {
+                onHoverEvent(ev.id);
+                polyline.setStyle({ weight: 4, opacity: 0.7 });
+                polyline.bringToFront();
+            });
+            polyline.on('mouseout', () => {
+                onHoverEvent(null);
+                polyline.setStyle({ weight: 3, opacity: 0.5 });
+            });
+
+            routesRef.current.set(ev.id, polyline);
+        };
+
+        dayLocatedEvents.forEach(({ events: dayEvents }) => {
+            dayEvents.forEach((ev, index) => {
+                const color = ev.color || '#5B7FBF';
+                const eventMarkers: L.CircleMarker[] = [];
+                const eventGlows: L.CircleMarker[] = [];
+                const startTimeLabel = minutesToTime(ev.startMinutes);
+                const endTimeLabel = minutesToTime(ev.endMinutes);
+                const eventTitle = (ev.title || 'Untitled').trim();
+
+                if (ev.location) {
+                    const latlng = L.latLng(ev.location.lat, ev.location.lng);
+                    bounds.push(latlng);
+                    const { marker, glow } = createPin(
+                        latlng,
+                        color,
+                        ev.id,
+                        `${startTimeLabel} | ${eventTitle}`
+                    );
+                    eventMarkers.push(marker);
+                    eventGlows.push(glow);
+                }
+
+                if (ev.destination) {
+                    const latlng = L.latLng(ev.destination.lat, ev.destination.lng);
+                    bounds.push(latlng);
+                    const { marker, glow } = createPin(
+                        latlng,
+                        color,
+                        ev.id,
+                        `${endTimeLabel} | ${eventTitle}`
+                    );
+                    eventMarkers.push(marker);
+                    eventGlows.push(glow);
+                }
+
+                markersRef.current.set(ev.id, eventMarkers);
+                glowMarkersRef.current.set(ev.id, eventGlows);
+
+                const mode = ev.routeMode || 'simple';
+                if (mode === 'hidden') return;
+
+                if (ev.location && ev.destination) {
+                    const startLatLng = L.latLng(ev.location.lat, ev.location.lng);
+                    const endLatLng = L.latLng(ev.destination.lat, ev.destination.lng);
+                    drawRoute(ev, color, mode, startLatLng, endLatLng);
+                    return;
+                }
+
+                const currentEndpoint = ev.destination ?? ev.location;
+                const previousEvent = dayEvents[index - 1];
+                const previousEndpoint = previousEvent?.destination ?? previousEvent?.location;
+                if (!currentEndpoint || !previousEndpoint) return;
+
+                const startLatLng = L.latLng(previousEndpoint.lat, previousEndpoint.lng);
+                const endLatLng = L.latLng(currentEndpoint.lat, currentEndpoint.lng);
+                drawRoute(ev, color, mode, startLatLng, endLatLng);
+            });
         });
 
         // Fit bounds
@@ -353,9 +394,9 @@ const MapView: React.FC<MapViewProps> = ({ events, hoveredEventId, onHoverEvent 
         return () => {
             isCancelled = true;
         };
-    }, [locatedEvents, onHoverEvent]);
+    }, [dayLocatedEvents, onHoverEvent]);
 
-    const hasLocations = locatedEvents.length > 0;
+    const hasLocations = dayLocatedEvents.length > 0;
 
     return (
         <div className="map-section">
