@@ -51,6 +51,7 @@ const EventBlock: React.FC<EventBlockProps> = ({
     const destSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const blockRef = useRef<HTMLDivElement>(null);
     const popoutRef = useRef<HTMLDivElement>(null);
+    const [popoutTopPx, setPopoutTopPx] = useState(0);
 
     const topPx = minutesToPx(block.startMinutes, startHour, endHour, containerHeight);
     const bottomPx = minutesToPx(block.endMinutes, startHour, endHour, containerHeight);
@@ -62,6 +63,28 @@ const EventBlock: React.FC<EventBlockProps> = ({
     const hasSingleEndpoint = Boolean(block.location) !== Boolean(block.destination);
     const timeRangeLabel = `${minutesToTime(block.startMinutes)} - ${minutesToTime(block.endMinutes)}`;
     const currentRouteMode = block.routeMode || 'simple';
+    const PALETTE_ESTIMATED_HEIGHT = 44;
+    const PALETTE_GAP = 4;
+    const shouldPlacePaletteAbove =
+        topPx > PALETTE_ESTIMATED_HEIGHT + PALETTE_GAP &&
+        bottomPx + PALETTE_ESTIMATED_HEIGHT + PALETTE_GAP > containerHeight;
+    const paletteTopPx = shouldPlacePaletteAbove
+        ? Math.max(0, topPx - PALETTE_ESTIMATED_HEIGHT - PALETTE_GAP)
+        : bottomPx;
+
+    useEffect(() => {
+        if (!isCompact || !showEditPopout) return;
+        const popoutEl = popoutRef.current;
+        if (!popoutEl) return;
+
+        const popoutHeight = popoutEl.offsetHeight;
+        const wouldOverflowBottom = topPx + popoutHeight > containerHeight;
+        const nextTop = wouldOverflowBottom
+            ? Math.max(0, Math.min(bottomPx - popoutHeight, containerHeight - popoutHeight))
+            : topPx;
+
+        setPopoutTopPx(nextTop);
+    }, [isCompact, showEditPopout, topPx, bottomPx, containerHeight]);
 
     // Show palette when editing or when no color chosen yet
     const isEditing = titleFocused || bodyFocused || locationFocused || destFocused || colorPickerOpen || showEditPopout;
@@ -145,12 +168,13 @@ const EventBlock: React.FC<EventBlockProps> = ({
 
     const handleTitleZoneClick = useCallback(() => {
         if (isCompact) {
+            setPopoutTopPx(topPx);
             setShowEditPopout(true);
             setTimeout(() => popoutTitleRef.current?.focus(), 100);
         } else {
             titleRef.current?.focus();
         }
-    }, [isCompact]);
+    }, [isCompact, topPx]);
 
     const handleBodyZoneClick = useCallback(() => {
         descRef.current?.focus();
@@ -158,9 +182,10 @@ const EventBlock: React.FC<EventBlockProps> = ({
 
     // Open popout on click for compact blocks
     const handleCompactClick = useCallback(() => {
+        setPopoutTopPx(topPx);
         setShowEditPopout(true);
         setTimeout(() => popoutTitleRef.current?.focus(), 100);
-    }, []);
+    }, [topPx]);
 
     // Nominatim search helper
     const nominatimSearch = useCallback(
@@ -379,7 +404,7 @@ const EventBlock: React.FC<EventBlockProps> = ({
             ref={popoutRef}
             className="event-popout"
             style={{
-                top: topPx,
+                top: popoutTopPx,
                 background: block.color
                     ? `radial-gradient(ellipse at 20% 10%, ${bgColor}44, ${bgSubtle})`
                     : 'var(--card)',
@@ -526,7 +551,7 @@ const EventBlock: React.FC<EventBlockProps> = ({
 
             <ColorPalette
                 visible={showPalette}
-                topPx={bottomPx}
+                topPx={paletteTopPx}
                 currentColor={block.color}
                 onSelectColor={handleColorSelect}
                 onColorPickerFocus={() => setColorPickerOpen(true)}

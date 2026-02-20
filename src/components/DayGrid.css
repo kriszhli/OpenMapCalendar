@@ -22,8 +22,6 @@
     flex-direction: column;
     height: auto;
     min-height: 100%;
-    padding-bottom: 120px;
-    /* Space for bottom popups */
 }
 
 .day-grid.day-view .day-card {
