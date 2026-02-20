@@ -198,6 +198,19 @@ const sanitizeContextEvent = (raw) => {
     };
 };
 
+const sanitizeRelativeDayHint = (raw) => {
+    if (!raw || typeof raw !== 'object') return null;
+    const phrase = cleanString(raw.phrase, 80);
+    const date = cleanString(raw.date, 10);
+    const dayNumberRaw = Number(raw.dayNumber);
+    if (!phrase || !isIsoDate(date) || !Number.isFinite(dayNumberRaw)) return null;
+    return {
+        phrase,
+        dayNumber: Math.max(1, Math.min(366, Math.floor(dayNumberRaw))),
+        date,
+    };
+};
+
 const formatContextEventsForPrompt = (events) => {
     if (!events.length) return '[]';
     const lines = events.map((event) => {
@@ -206,6 +219,108 @@ const formatContextEventsForPrompt = (events) => {
         return `${event.date} [day ${event.dayIndex}] ${event.startTime}-${event.endTime} ${event.title}${route}`;
     });
     return lines.join('\n');
+};
+
+const formatRelativeDayHintsForPrompt = (hints) => {
+    if (!hints.length) return '[]';
+    return hints
+        .map((hint) => `"${hint.phrase}" => day ${hint.dayNumber} => ${hint.date}`)
+        .join('\n');
+};
+
+const buildCalendarDatabaseSnapshot = (context) => {
+    const rows = [];
+    rows.push(`window_start=${context.calendarStartDate}`);
+    rows.push(`window_end=${context.calendarEndDate}`);
+    rows.push(`visible_days=${context.visibleDays}`);
+    rows.push(`time_bounds=${context.dayStartHour}:00-${context.dayEndHour}:00`);
+
+    if (!context.existingEvents.length) {
+        rows.push('events=[]');
+    } else {
+        rows.push(`events_count=${context.existingEvents.length}`);
+        for (const event of context.existingEvents) {
+            const route = [event.origin, event.destination].filter(Boolean).join(' -> ');
+            rows.push(
+                `${event.date} day=${event.dayIndex} ${event.startTime}-${event.endTime} ${event.title}${route ? ` | ${route}` : ''}`
+            );
+        }
+    }
+
+    if (context.relativeDayHints.length) {
+        rows.push('relative_day_map:');
+        for (const hint of context.relativeDayHints) {
+            rows.push(`${hint.phrase} => day ${hint.dayNumber} => ${hint.date}`);
+        }
+    }
+
+    return rows.join('\n');
+};
+
+const isDateClarificationMessage = (text) =>
+    /(?:exact|specific|which|what)\s+date/i.test(text) ||
+    /date\s+(?:for|is)\s+(?:the\s+)?(?:first|second|third|fourth|fifth|day\s+\d+)/i.test(text);
+
+const buildRelativeHintDirective = (hints) => {
+    if (!hints.length) return '';
+    return `Date mapping is already resolved and mandatory:
+${hints.map((hint) => `${hint.phrase} = ${hint.date}`).join('\n')}
+Do not ask the user for exact dates for these phrases.`;
+};
+
+const pad2 = (n) => String(n).padStart(2, '0');
+const addDaysIso = (isoDate, days) => {
+    const [year, month, day] = isoDate.split('-').map(Number);
+    const d = new Date(year, month - 1, day);
+    d.setDate(d.getDate() + days);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+};
+
+const ORDINAL_FALLBACK = {
+    first: 1,
+    second: 2,
+    third: 3,
+    fourth: 4,
+    fifth: 5,
+    sixth: 6,
+    seventh: 7,
+    eighth: 8,
+    ninth: 9,
+    tenth: 10,
+};
+
+const inferRelativeDayHintsFromText = (text, calendarStartDate, visibleDays) => {
+    const normalized = cleanString(text, 1000).toLowerCase();
+    if (!normalized || !isIsoDate(calendarStartDate)) return [];
+
+    const hints = [];
+    const ordinalRegex = /\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+day\b/g;
+    let ordinalMatch = null;
+    while ((ordinalMatch = ordinalRegex.exec(normalized)) !== null) {
+        const dayNumber = ORDINAL_FALLBACK[ordinalMatch[1]];
+        if (!dayNumber || dayNumber > visibleDays) continue;
+        hints.push({
+            phrase: ordinalMatch[0],
+            dayNumber,
+            date: addDaysIso(calendarStartDate, dayNumber - 1),
+        });
+    }
+
+    const numericRegex = /\bday\s+(\d{1,2})\b/g;
+    let numericMatch = null;
+    while ((numericMatch = numericRegex.exec(normalized)) !== null) {
+        const dayNumber = Number(numericMatch[1]);
+        if (!Number.isFinite(dayNumber) || dayNumber < 1 || dayNumber > visibleDays) continue;
+        hints.push({
+            phrase: numericMatch[0],
+            dayNumber,
+            date: addDaysIso(calendarStartDate, dayNumber - 1),
+        });
+    }
+
+    const dedup = new Map();
+    for (const hint of hints) dedup.set(hint.dayNumber, hint);
+    return [...dedup.values()].sort((a, b) => a.dayNumber - b.dayNumber);
 };
 
 const normalizeAiPlan = (raw) => {
@@ -237,7 +352,7 @@ const normalizeAiPlan = (raw) => {
     return { status, assistantMessage, events };
 };
 
-const buildAiSystemPrompt = (context) => `You are an assistant that converts travel/scheduling chat into calendar events.
+const buildAiSystemPrompt = (context, extraInstruction = '') => `You are an assistant that converts travel/scheduling chat into calendar events.
 Respond with STRICT JSON only, no markdown.
 
 Current date: ${context.today}
@@ -249,6 +364,12 @@ Typical hourly bounds: ${context.dayStartHour}:00-${context.dayEndHour}:00
 
 Existing events (do not overlap with these unless user explicitly asks to replace):
 ${context.existingEventsText}
+
+Relative day hints from the latest user message (must follow these exact dates):
+${context.relativeDayHintsText}
+
+Calendar database snapshot:
+${context.calendarDbSnapshot}
 
 Output JSON schema:
 {
@@ -274,7 +395,9 @@ Rules:
 3. Always use 24-hour HH:MM format.
 4. Use exact dates in YYYY-MM-DD format; resolve relative dates from current date and timezone.
 5. Do not overlap new events with existing events. If overlap is unavoidable, ask a clarification question.
-6. Do not include extra keys.`;
+6. If a relative day hint exists (for example "second day"), you must use the mapped date exactly.
+7. Do not include extra keys.
+${extraInstruction ? `\nAdditional hard constraint:\n${extraInstruction}` : ''}`;
 
 // ─── Disk I/O Helpers ───
 
@@ -498,13 +621,28 @@ app.post('/api/ai/plan-events', async (req, res) => {
         existingEvents: Array.isArray(contextRaw.existingEvents)
             ? contextRaw.existingEvents.map(sanitizeContextEvent).filter(Boolean).slice(0, 200)
             : [],
+        relativeDayHints: Array.isArray(contextRaw.relativeDayHints)
+            ? contextRaw.relativeDayHints.map(sanitizeRelativeDayHint).filter(Boolean).slice(0, 20)
+            : [],
     };
+    if (context.relativeDayHints.length === 0) {
+        const latestUser = [...messages].reverse().find((msg) => msg.role === 'user');
+        if (latestUser?.content) {
+            context.relativeDayHints = inferRelativeDayHintsFromText(
+                latestUser.content,
+                context.calendarStartDate,
+                context.visibleDays
+            );
+        }
+    }
     context.existingEventsText = formatContextEventsForPrompt(context.existingEvents);
+    context.relativeDayHintsText = formatRelativeDayHintsForPrompt(context.relativeDayHints);
+    context.calendarDbSnapshot = buildCalendarDatabaseSnapshot(context);
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
 
-    try {
+    const runPlanner = async (extraInstruction = '') => {
         const ollamaRes = await fetch(`${OLLAMA_URL}/api/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -513,9 +651,9 @@ app.post('/api/ai/plan-events', async (req, res) => {
                 model: OLLAMA_MODEL,
                 stream: false,
                 format: 'json',
-                options: { temperature: 0.15 },
+                options: { temperature: 0.1 },
                 messages: [
-                    { role: 'system', content: buildAiSystemPrompt(context) },
+                    { role: 'system', content: buildAiSystemPrompt(context, extraInstruction) },
                     ...messages,
                 ],
             }),
@@ -523,32 +661,42 @@ app.post('/api/ai/plan-events', async (req, res) => {
 
         if (!ollamaRes.ok) {
             const detail = cleanString(await ollamaRes.text(), 250);
-            return res.status(502).json({
-                error: 'Ollama returned an error.',
-                detail: detail || `${ollamaRes.status} ${ollamaRes.statusText}`,
-            });
+            throw new Error(detail || `${ollamaRes.status} ${ollamaRes.statusText}`);
         }
 
         const payload = await ollamaRes.json();
         const modelContent = payload?.message?.content ?? '';
         const parsed = parseModelJson(modelContent);
-
         if (!parsed) {
-            return res.json({
+            return {
                 status: 'needs_clarification',
                 assistantMessage: 'I could not parse that reliably. Please restate with exact date, time, and locations.',
                 events: [],
-            });
+            };
+        }
+        return normalizeAiPlan(parsed);
+    };
+
+    try {
+        let plan = await runPlanner();
+
+        if (
+            plan.status === 'needs_clarification' &&
+            context.relativeDayHints.length > 0 &&
+            isDateClarificationMessage(plan.assistantMessage)
+        ) {
+            const forcedDirective = buildRelativeHintDirective(context.relativeDayHints);
+            plan = await runPlanner(forcedDirective);
         }
 
-        res.json(normalizeAiPlan(parsed));
+        res.json(plan);
     } catch (err) {
         const isTimeout = err?.name === 'AbortError';
         res.status(503).json({
             error: isTimeout
                 ? `Ollama timed out after ${OLLAMA_TIMEOUT_MS}ms.`
                 : `Unable to reach Ollama at ${OLLAMA_URL}.`,
-            detail: cleanString(err?.message, 250),
+            detail: cleanString(err?.message, 250) || 'Planner request failed',
         });
     } finally {
         clearTimeout(timeoutId);

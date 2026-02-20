@@ -74,6 +74,12 @@ interface CalendarAiContextEvent {
   destination?: string;
 }
 
+interface RelativeDayHint {
+  phrase: string;
+  dayNumber: number;
+  date: string;
+}
+
 interface RollbackSnapshot {
   events: Record<number, TimeBlock[]>;
   numDays: number;
@@ -89,6 +95,7 @@ interface ApplyPlanResult {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const EARTH_RADIUS_KM = 6371;
 
 const DEFAULT_AI_MESSAGES: AiChatMessage[] = [
   {
@@ -112,6 +119,114 @@ const addDays = (value: Date, days: number): Date => {
   const next = new Date(value);
   next.setDate(next.getDate() + days);
   return next;
+};
+
+const toRadians = (deg: number): number => (deg * Math.PI) / 180;
+
+const distanceKm = (a: { lat: number; lng: number }, b: { lat: number; lng: number }): number => {
+  const dLat = toRadians(b.lat - a.lat);
+  const dLng = toRadians(b.lng - a.lng);
+  const lat1 = toRadians(a.lat);
+  const lat2 = toRadians(b.lat);
+  const sinDLat = Math.sin(dLat / 2);
+  const sinDLng = Math.sin(dLng / 2);
+  const h = sinDLat * sinDLat + Math.cos(lat1) * Math.cos(lat2) * sinDLng * sinDLng;
+  return 2 * EARTH_RADIUS_KM * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+};
+
+const ORDINAL_DAY_MAP: Record<string, number> = {
+  first: 1,
+  second: 2,
+  third: 3,
+  fourth: 4,
+  fifth: 5,
+  sixth: 6,
+  seventh: 7,
+  eighth: 8,
+  ninth: 9,
+  tenth: 10,
+  eleventh: 11,
+  twelfth: 12,
+  thirteenth: 13,
+  fourteenth: 14,
+  fifteenth: 15,
+  sixteenth: 16,
+  seventeenth: 17,
+  eighteenth: 18,
+  nineteenth: 19,
+  twentieth: 20,
+  twentyfirst: 21,
+  twentysecond: 22,
+  twentythird: 23,
+  twentyfourth: 24,
+  twentyfifth: 25,
+  twentysixth: 26,
+  twentyseventh: 27,
+  twentyeighth: 28,
+  twentyninth: 29,
+  thirtieth: 30,
+  thirtyfirst: 31,
+};
+
+const normalizeOrdinalToken = (token: string): string =>
+  token.toLowerCase().replace(/[\s-]/g, '');
+
+const extractRelativeDayHints = (
+  text: string,
+  calendarStartDate: Date,
+  numDays: number
+): RelativeDayHint[] => {
+  const hints: RelativeDayHint[] = [];
+  const seen = new Set<number>();
+
+  const numericRegex = /\bday\s+(\d{1,2})\b/gi;
+  let numericMatch: RegExpExecArray | null;
+  while ((numericMatch = numericRegex.exec(text)) !== null) {
+    const dayNumber = Number(numericMatch[1]);
+    if (!Number.isFinite(dayNumber) || dayNumber < 1 || dayNumber > numDays || seen.has(dayNumber)) continue;
+    seen.add(dayNumber);
+    hints.push({
+      phrase: numericMatch[0],
+      dayNumber,
+      date: toLocalIsoDate(addDays(calendarStartDate, dayNumber - 1)),
+    });
+  }
+
+  const ordinalRegex = /\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|twenty[\s-]?first|twenty[\s-]?second|twenty[\s-]?third|twenty[\s-]?fourth|twenty[\s-]?fifth|twenty[\s-]?sixth|twenty[\s-]?seventh|twenty[\s-]?eighth|twenty[\s-]?ninth|thirtieth|thirty[\s-]?first)\s+day\b/gi;
+  let ordinalMatch: RegExpExecArray | null;
+  while ((ordinalMatch = ordinalRegex.exec(text)) !== null) {
+    const key = normalizeOrdinalToken(ordinalMatch[1]);
+    const dayNumber = ORDINAL_DAY_MAP[key];
+    if (!dayNumber || dayNumber > numDays || seen.has(dayNumber)) continue;
+    seen.add(dayNumber);
+    hints.push({
+      phrase: ordinalMatch[0],
+      dayNumber,
+      date: toLocalIsoDate(addDays(calendarStartDate, dayNumber - 1)),
+    });
+  }
+
+  return hints.sort((a, b) => a.dayNumber - b.dayNumber);
+};
+
+const extractCoordinateHints = (eventsByDay: Record<number, TimeBlock[]>): { lat: number; lng: number }[] => {
+  const coords: { lat: number; lng: number }[] = [];
+  for (const dayEvents of Object.values(eventsByDay)) {
+    for (const event of dayEvents || []) {
+      if (event.location) coords.push({ lat: event.location.lat, lng: event.location.lng });
+      if (event.destination) coords.push({ lat: event.destination.lat, lng: event.destination.lng });
+    }
+  }
+  return coords;
+};
+
+const centroidOfCoords = (coords: { lat: number; lng: number }[]): { lat: number; lng: number } | undefined => {
+  if (!coords.length) return undefined;
+  const sum = coords.reduce(
+    (acc, curr) => ({ lat: acc.lat + curr.lat, lng: acc.lng + curr.lng }),
+    { lat: 0, lng: 0 }
+  );
+  return { lat: sum.lat / coords.length, lng: sum.lng / coords.length };
 };
 
 const diffInDays = (left: Date, right: Date): number =>
@@ -224,28 +339,51 @@ function parseCalendarResponse(raw: unknown): CalendarResponse {
   };
 }
 
-async function geocodeLocationByName(name: string): Promise<LocationData | undefined> {
+async function geocodeLocationByName(
+  name: string,
+  focus?: { lat: number; lng: number }
+): Promise<LocationData | undefined> {
   const query = name.trim();
   if (!query) return undefined;
 
   try {
+    const params = new URLSearchParams({
+      format: 'json',
+      q: query,
+      limit: '6',
+    });
     const res = await fetch(
-      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`,
+      `https://nominatim.openstreetmap.org/search?${params.toString()}`,
       { headers: { 'Accept-Language': 'en' } }
     );
     if (!res.ok) return undefined;
     const results = (await res.json()) as { display_name: string; lat: string; lon: string }[];
-    const first = results[0];
-    if (!first) return undefined;
+    if (!results.length) return undefined;
 
-    const lat = Number(first.lat);
-    const lng = Number(first.lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return undefined;
+    const normalized = results
+      .map((item) => ({ ...item, latNum: Number(item.lat), lngNum: Number(item.lon) }))
+      .filter((item) => Number.isFinite(item.latNum) && Number.isFinite(item.lngNum));
+    if (!normalized.length) return undefined;
+
+    let best = normalized[0];
+    if (focus) {
+      best = normalized.reduce((currentBest, candidate) => {
+        const currentDist = distanceKm(
+          { lat: currentBest.latNum, lng: currentBest.lngNum },
+          focus
+        );
+        const candidateDist = distanceKm(
+          { lat: candidate.latNum, lng: candidate.lngNum },
+          focus
+        );
+        return candidateDist < currentDist ? candidate : currentBest;
+      }, normalized[0]);
+    }
 
     return {
-      name: first.display_name.split(',').slice(0, 2).join(',').trim() || query,
-      lat,
-      lng,
+      name: best.display_name.split(',').slice(0, 2).join(',').trim() || query,
+      lat: best.latNum,
+      lng: best.lngNum,
     };
   } catch {
     return undefined;
@@ -391,16 +529,22 @@ function App() {
       const minDayDiff = Math.min(...parsed.map((event) => event.dayDiff));
       const offset = minDayDiff < 0 ? -minDayDiff : 0;
       const shiftedStartDate = addDays(snapshotStartDate, -offset);
+      const globalFocus = centroidOfCoords(extractCoordinateHints(snapshot.events));
 
       const geocodeCache = new Map<string, Promise<LocationData | undefined>>();
       const unresolvedPlaces = new Set<string>();
-      const resolvePlace = async (place?: string): Promise<LocationData | undefined> => {
+      const resolvePlace = async (
+        place?: string,
+        focus?: { lat: number; lng: number }
+      ): Promise<LocationData | undefined> => {
         const key = place?.trim();
         if (!key) return undefined;
-        if (!geocodeCache.has(key)) {
-          geocodeCache.set(key, geocodeLocationByName(key));
+        const focusKey = focus ? `|${focus.lat.toFixed(3)},${focus.lng.toFixed(3)}` : '';
+        const cacheKey = `${key}${focusKey}`;
+        if (!geocodeCache.has(cacheKey)) {
+          geocodeCache.set(cacheKey, geocodeLocationByName(key, focus));
         }
-        const resolved = await geocodeCache.get(key);
+        const resolved = await geocodeCache.get(cacheKey);
         if (!resolved) unresolvedPlaces.add(key);
         return resolved;
       };
@@ -433,9 +577,11 @@ function App() {
           continue;
         }
 
+        const dayCoords = extractCoordinateHints({ [dayIndex]: dayEvents });
+        const focus = centroidOfCoords(dayCoords) ?? globalFocus;
         const [location, destination] = await Promise.all([
-          resolvePlace(event.origin),
-          resolvePlace(event.destination),
+          resolvePlace(event.origin, focus),
+          resolvePlace(event.destination, focus),
         ]);
 
         const block: TimeBlock = {
@@ -512,6 +658,7 @@ function App() {
       const calendarStartLocal = toLocalIsoDate(startDate);
       const calendarEndLocal = toLocalIsoDate(addDays(startDate, numDays - 1));
       const existingEvents = serializeCalendarEventsForAi(events, startDate);
+      const relativeDayHints = extractRelativeDayHints(text, startDate, numDays);
 
       try {
         const response = await fetch('/api/ai/plan-events', {
@@ -527,6 +674,7 @@ function App() {
               dayEndHour: endHour,
               timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
               existingEvents,
+              relativeDayHints,
             },
           }),
         });
