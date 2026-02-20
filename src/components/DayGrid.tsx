@@ -67,7 +67,13 @@ const DayGrid: React.FC<DayGridProps> = ({
     return (
         <LayoutGroup>
             <div
-                className={`day-grid ${viewMode === 'grid' ? 'grid-view' : 'row-view'}`}
+                className={`day-grid ${
+                    viewMode === 'grid'
+                        ? 'grid-view'
+                        : numDays > 7
+                            ? 'row-view row-scrollable'
+                            : 'row-view row-fit'
+                }`}
                 style={{ '--num-cols': Math.min(numDays, 7) } as React.CSSProperties}
             >
                 {Array.from({ length: numDays }, (_, i) => (

@@ -6,9 +6,47 @@
 }
 
 .day-grid.row-view {
-    grid-auto-flow: column;
-    grid-auto-columns: 1fr;
-    grid-template-rows: 1fr;
+    display: flex;
+    align-items: stretch;
+    overflow-x: auto;
+    overflow-y: hidden;
+    min-width: 0;
+    padding-bottom: 6px;
+    scrollbar-gutter: stable both-edges;
+}
+
+.day-grid.row-view .day-card {
+    min-height: 0;
+}
+
+/* <= 7 days: fill available width without scrolling */
+.day-grid.row-view.row-fit .day-card {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+/* > 7 days: keep 7 cards visible, overflow horizontally */
+.day-grid.row-view.row-scrollable .day-card {
+    flex: 0 0 calc((100% - (var(--gap) * 6)) / 7);
+    min-width: calc((100% - (var(--gap) * 6)) / 7);
+}
+
+.day-grid.row-view::-webkit-scrollbar {
+    height: 10px;
+}
+
+.day-grid.row-view::-webkit-scrollbar-track {
+    background: var(--card);
+    border-radius: 999px;
+}
+
+.day-grid.row-view::-webkit-scrollbar-thumb {
+    background: var(--text-ultra-low);
+    border-radius: 999px;
+}
+
+.day-grid.row-view::-webkit-scrollbar-thumb:hover {
+    background: var(--text-low);
 }
 
 .day-grid.grid-view {
@@ -30,7 +68,7 @@
 }
 
 @media (max-width: 768px) {
-    .day-grid {
+    .day-grid.grid-view {
         grid-template-columns: 1fr 1fr !important;
         grid-auto-flow: row !important;
         grid-auto-columns: unset !important;
