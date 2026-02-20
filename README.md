@@ -46,6 +46,15 @@ The same button cycles through:
 ### 5. Focus mode for a single day
 Switch to **Day view** for tighter planning and fine zoom interaction on the map.
 
+### 6. AI planner (new)
+Use the floating chat button in the bottom-right corner to describe your plan in plain language:
+- where you are going
+- when you are going
+- where you are going from / to
+
+The assistant asks follow-up clarification questions when dates or places are ambiguous.  
+Once details are clear, it creates events directly in your calendar and geocodes locations for map pins/routes.
+
 ## Screenshots
 
 ![Calendar and map layout](/screenshot_calendar_and_map.png)
@@ -70,6 +79,19 @@ npm run host
 ```
 
 Open the printed URL in your browser (and on other devices in the same network if needed).
+
+### Local AI setup (Ollama)
+Run Ollama locally and pull the model you want (default in app is `gemma3:1b`):
+
+```bash
+ollama serve
+ollama pull gemma3:1b
+```
+
+Optional environment variables before starting the app server:
+- `OLLAMA_MODEL` (default: `gemma3:1b`)
+- `OLLAMA_URL` (default: `http://127.0.0.1:11434`)
+- `OLLAMA_TIMEOUT_MS` (default: `45000`)
 
 ### Develop locally
 ```bash

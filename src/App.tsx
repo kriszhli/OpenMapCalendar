@@ -1,18 +1,18 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import type { PreciseRouteCache, ViewMode, TimeBlock } from './types';
+import type { LocationData, PreciseRouteCache, ViewMode, TimeBlock } from './types';
+import { generateId, minutesToTime, PALETTE_COLORS } from './types';
 import AppShell from './components/AppShell';
 import TopControls from './components/TopControls';
 import DayGrid from './components/DayGrid';
 import DaySidebar from './components/DaySidebar';
 import MapView from './components/MapView';
 import CalendarManager from './components/CalendarManager';
+import AiPlannerChat, { type AiChatMessage } from './components/AiPlannerChat';
 import './App.css';
-
-
 
 interface CalendarState {
   numDays: number;
-  startDate: string; // ISO string
+  startDate: string;
   startHour: number;
   endHour: number;
   viewMode: ViewMode;
@@ -33,24 +33,223 @@ interface CalendarResponse {
   revision: number;
 }
 
+interface AiPlanEvent {
+  title: string;
+  description?: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  origin?: string;
+  destination?: string;
+  color?: string;
+}
+
+interface AiPlanResponse {
+  status: 'ready' | 'needs_clarification';
+  assistantMessage: string;
+  events: AiPlanEvent[];
+  error?: string;
+  detail?: string;
+}
+
+interface ParsedPlanEvent {
+  title: string;
+  description: string;
+  date: Date;
+  dayDiff: number;
+  startMinutes: number;
+  endMinutes: number;
+  origin?: string;
+  destination?: string;
+  color?: string;
+}
+
+interface CalendarAiContextEvent {
+  dayIndex: number;
+  date: string;
+  startTime: string;
+  endTime: string;
+  title: string;
+  origin?: string;
+  destination?: string;
+}
+
+interface RollbackSnapshot {
+  events: Record<number, TimeBlock[]>;
+  numDays: number;
+  startDateIso: string;
+  dayViewIndex: number;
+}
+
+interface ApplyPlanResult {
+  created: number;
+  unresolvedPlaces: string[];
+  skippedInvalid: number;
+  skippedOverlap: number;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const DEFAULT_AI_MESSAGES: AiChatMessage[] = [
+  {
+    id: 'ai-welcome',
+    role: 'assistant',
+    text: 'Tell me where and when you want to go, and I will create calendar events for you.',
+  },
+];
+
+const toLocalDay = (value: Date): Date =>
+  new Date(value.getFullYear(), value.getMonth(), value.getDate());
+
+const toLocalIsoDate = (value: Date): string => {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const addDays = (value: Date, days: number): Date => {
+  const next = new Date(value);
+  next.setDate(next.getDate() + days);
+  return next;
+};
+
+const diffInDays = (left: Date, right: Date): number =>
+  Math.round((toLocalDay(left).getTime() - toLocalDay(right).getTime()) / DAY_MS);
+
+const parseIsoDateOnly = (value: string): Date | null => {
+  const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(year, month - 1, day);
+  if (
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return null;
+  }
+  return parsed;
+};
+
+const parseTimeToMinutes = (value: string): number | null => {
+  const match = value.trim().match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+};
+
+const normalizeHexColor = (value?: string): string | undefined => {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  return /^#[0-9a-fA-F]{6}$/.test(trimmed) ? trimmed : undefined;
+};
+
+const cloneEvents = (source: Record<number, TimeBlock[]>): Record<number, TimeBlock[]> => {
+  const clone: Record<number, TimeBlock[]> = {};
+  for (const [dayKey, dayEvents] of Object.entries(source)) {
+    clone[Number(dayKey)] = dayEvents.map((event) => ({ ...event }));
+  }
+  return clone;
+};
+
+const hasTimeOverlap = (aStart: number, aEnd: number, bStart: number, bEnd: number): boolean =>
+  aStart < bEnd && aEnd > bStart;
+
+const serializeCalendarEventsForAi = (
+  eventsByDay: Record<number, TimeBlock[]>,
+  calendarStartDate: Date
+): CalendarAiContextEvent[] => {
+  const rows: CalendarAiContextEvent[] = [];
+  const dayIndexes = Object.keys(eventsByDay)
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+
+  for (const dayIndex of dayIndexes) {
+    const dayDate = addDays(calendarStartDate, dayIndex);
+    const date = toLocalIsoDate(dayDate);
+    const sortedEvents = [...(eventsByDay[dayIndex] || [])].sort(
+      (a, b) => a.startMinutes - b.startMinutes
+    );
+
+    for (const event of sortedEvents) {
+      rows.push({
+        dayIndex,
+        date,
+        startTime: minutesToTime(event.startMinutes),
+        endTime: minutesToTime(event.endMinutes),
+        title: (event.title || 'Untitled').trim(),
+        origin: event.location?.name,
+        destination: event.destination?.name,
+      });
+    }
+  }
+
+  return rows;
+};
+
 function parseCalendarResponse(raw: unknown): CalendarResponse {
   const data = raw as Partial<CalendarState> & { state?: Partial<CalendarState>; revision?: number };
   const source = data.state ?? data;
   const parsedDate = typeof source.startDate === 'string' ? new Date(source.startDate) : null;
+  const parsedNumDays = Number(source.numDays);
+  const parsedStartHour = Number(source.startHour);
+  const parsedEndHour = Number(source.endHour);
 
   const state: CalendarState = {
-    numDays: Number.isFinite(source.numDays) && source.numDays! > 0 ? source.numDays! : DEFAULT_CALENDAR_STATE.numDays,
-    startDate: parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate.toISOString() : DEFAULT_CALENDAR_STATE.startDate,
-    startHour: Number.isFinite(source.startHour) ? source.startHour! : DEFAULT_CALENDAR_STATE.startHour,
-    endHour: Number.isFinite(source.endHour) ? source.endHour! : DEFAULT_CALENDAR_STATE.endHour,
-    viewMode: source.viewMode === 'grid' || source.viewMode === 'day' || source.viewMode === 'row' ? source.viewMode : DEFAULT_CALENDAR_STATE.viewMode,
-    events: typeof source.events === 'object' && source.events !== null ? source.events as Record<number, TimeBlock[]> : {},
+    numDays: Number.isFinite(parsedNumDays) && parsedNumDays > 0 ? parsedNumDays : DEFAULT_CALENDAR_STATE.numDays,
+    startDate:
+      parsedDate && !Number.isNaN(parsedDate.getTime())
+        ? parsedDate.toISOString()
+        : DEFAULT_CALENDAR_STATE.startDate,
+    startHour: Number.isFinite(parsedStartHour)
+      ? parsedStartHour
+      : DEFAULT_CALENDAR_STATE.startHour,
+    endHour: Number.isFinite(parsedEndHour) ? parsedEndHour : DEFAULT_CALENDAR_STATE.endHour,
+    viewMode:
+      source.viewMode === 'grid' || source.viewMode === 'day' || source.viewMode === 'row'
+        ? source.viewMode
+        : DEFAULT_CALENDAR_STATE.viewMode,
+    events:
+      typeof source.events === 'object' && source.events !== null
+        ? (source.events as Record<number, TimeBlock[]>)
+        : {},
   };
 
   return {
     state,
-    revision: Number.isInteger(data.revision) ? data.revision! : 0,
+    revision: Number.isInteger(data.revision) ? Number(data.revision) : 0,
   };
+}
+
+async function geocodeLocationByName(name: string): Promise<LocationData | undefined> {
+  const query = name.trim();
+  if (!query) return undefined;
+
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`,
+      { headers: { 'Accept-Language': 'en' } }
+    );
+    if (!res.ok) return undefined;
+    const results = (await res.json()) as { display_name: string; lat: string; lon: string }[];
+    const first = results[0];
+    if (!first) return undefined;
+
+    const lat = Number(first.lat);
+    const lng = Number(first.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return undefined;
+
+    return {
+      name: first.display_name.split(',').slice(0, 2).join(',').trim() || query,
+      lat,
+      lng,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function App() {
@@ -73,6 +272,26 @@ function App() {
   const [currentCalendarName, setCurrentCalendarName] = useState('');
   const [showCalendarManager, setShowCalendarManager] = useState(false);
 
+  // AI state (isolated per calendar)
+  const [aiMessagesByCalendar, setAiMessagesByCalendar] = useState<Record<string, AiChatMessage[]>>({});
+  const [aiRollbackByCalendar, setAiRollbackByCalendar] = useState<Record<string, RollbackSnapshot | null>>({});
+  const [aiLoading, setAiLoading] = useState(false);
+  const currentCalendarIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    currentCalendarIdRef.current = currentCalendarId;
+  }, [currentCalendarId]);
+
+  const currentAiMessages = useMemo(() => {
+    if (!currentCalendarId) return DEFAULT_AI_MESSAGES;
+    return aiMessagesByCalendar[currentCalendarId] ?? DEFAULT_AI_MESSAGES;
+  }, [currentCalendarId, aiMessagesByCalendar]);
+
+  const canRollbackAiChanges = useMemo(() => {
+    if (!currentCalendarId) return false;
+    return !!aiRollbackByCalendar[currentCalendarId];
+  }, [currentCalendarId, aiRollbackByCalendar]);
+
   const applyCalendarState = useCallback((state: CalendarState) => {
     setNumDays(state.numDays);
     setStartDate(new Date(state.startDate));
@@ -81,6 +300,334 @@ function App() {
     setViewMode(state.viewMode);
     setEvents(state.events);
   }, []);
+
+  const appendAiMessage = useCallback((calendarId: string, message: AiChatMessage) => {
+    setAiMessagesByCalendar((prev) => {
+      const current = prev[calendarId] ?? DEFAULT_AI_MESSAGES;
+      return {
+        ...prev,
+        [calendarId]: [...current, message],
+      };
+    });
+  }, []);
+
+  const appendAiAssistantMessage = useCallback(
+    (
+      calendarId: string,
+      text: string,
+      variant: AiChatMessage['variant'] = 'default'
+    ) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      appendAiMessage(calendarId, {
+        id: generateId(),
+        role: 'assistant',
+        text: trimmed,
+        variant,
+      });
+    },
+    [appendAiMessage]
+  );
+
+  const clearAiStateForCalendar = useCallback((calendarId: string) => {
+    setAiMessagesByCalendar((prev) => {
+      if (!(calendarId in prev)) return prev;
+      const next = { ...prev };
+      delete next[calendarId];
+      return next;
+    });
+    setAiRollbackByCalendar((prev) => {
+      if (!(calendarId in prev)) return prev;
+      const next = { ...prev };
+      delete next[calendarId];
+      return next;
+    });
+  }, []);
+
+  const applyPlannedEvents = useCallback(
+    async (
+      plannedEvents: AiPlanEvent[],
+      snapshot: RollbackSnapshot
+    ): Promise<ApplyPlanResult> => {
+      const snapshotStartDate = new Date(snapshot.startDateIso);
+      const currentStartDay = toLocalDay(snapshotStartDate);
+      const parsed: ParsedPlanEvent[] = [];
+      let skippedInvalid = 0;
+
+      for (const item of plannedEvents) {
+        const date = parseIsoDateOnly(item.date);
+        const startMinutesRaw = parseTimeToMinutes(item.startTime);
+        const endMinutesRaw = parseTimeToMinutes(item.endTime);
+        if (!date || startMinutesRaw === null || endMinutesRaw === null) {
+          skippedInvalid += 1;
+          continue;
+        }
+
+        const startMinutes = Math.max(0, Math.min(23 * 60 + 30, startMinutesRaw));
+        const endMinutes = Math.max(
+          startMinutes + 30,
+          Math.min(24 * 60, endMinutesRaw > startMinutes ? endMinutesRaw : startMinutes + 60)
+        );
+
+        parsed.push({
+          title: item.title?.trim() || 'Untitled',
+          description: item.description?.trim() || '',
+          date,
+          dayDiff: diffInDays(date, currentStartDay),
+          startMinutes,
+          endMinutes,
+          origin: item.origin?.trim(),
+          destination: item.destination?.trim(),
+          color: normalizeHexColor(item.color),
+        });
+      }
+
+      if (parsed.length === 0) {
+        return { created: 0, unresolvedPlaces: [], skippedInvalid, skippedOverlap: 0 };
+      }
+
+      parsed.sort((a, b) => (a.dayDiff - b.dayDiff) || (a.startMinutes - b.startMinutes));
+
+      const minDayDiff = Math.min(...parsed.map((event) => event.dayDiff));
+      const offset = minDayDiff < 0 ? -minDayDiff : 0;
+      const shiftedStartDate = addDays(snapshotStartDate, -offset);
+
+      const geocodeCache = new Map<string, Promise<LocationData | undefined>>();
+      const unresolvedPlaces = new Set<string>();
+      const resolvePlace = async (place?: string): Promise<LocationData | undefined> => {
+        const key = place?.trim();
+        if (!key) return undefined;
+        if (!geocodeCache.has(key)) {
+          geocodeCache.set(key, geocodeLocationByName(key));
+        }
+        const resolved = await geocodeCache.get(key);
+        if (!resolved) unresolvedPlaces.add(key);
+        return resolved;
+      };
+
+      const shiftedEvents: Record<number, TimeBlock[]> = {};
+      for (const [dayKey, dayEvents] of Object.entries(snapshot.events)) {
+        const oldDayIndex = Number(dayKey);
+        if (!Number.isFinite(oldDayIndex)) continue;
+        const nextDayIndex = oldDayIndex + offset;
+        shiftedEvents[nextDayIndex] = dayEvents.map((event) => ({
+          ...event,
+          dayIndex: nextDayIndex,
+        }));
+      }
+
+      const nextEvents = cloneEvents(shiftedEvents);
+      let created = 0;
+      let skippedOverlap = 0;
+      let colorIdx = 0;
+
+      for (const event of parsed) {
+        const dayIndex = event.dayDiff + offset;
+        const dayEvents = [...(nextEvents[dayIndex] || [])];
+        const overlapsExisting = dayEvents.some((existing) =>
+          hasTimeOverlap(event.startMinutes, event.endMinutes, existing.startMinutes, existing.endMinutes)
+        );
+
+        if (overlapsExisting) {
+          skippedOverlap += 1;
+          continue;
+        }
+
+        const [location, destination] = await Promise.all([
+          resolvePlace(event.origin),
+          resolvePlace(event.destination),
+        ]);
+
+        const block: TimeBlock = {
+          id: generateId(),
+          dayIndex,
+          startMinutes: event.startMinutes,
+          endMinutes: event.endMinutes,
+          color: event.color || PALETTE_COLORS[colorIdx % PALETTE_COLORS.length],
+          title: event.title,
+          description: event.description,
+          location,
+          destination,
+          routeMode: 'simple',
+        };
+
+        dayEvents.push(block);
+        dayEvents.sort((a, b) => a.startMinutes - b.startMinutes);
+        nextEvents[dayIndex] = dayEvents;
+        created += 1;
+        colorIdx += 1;
+      }
+
+      if (created === 0) {
+        return {
+          created: 0,
+          unresolvedPlaces: [...unresolvedPlaces],
+          skippedInvalid,
+          skippedOverlap,
+        };
+      }
+
+      const maxIndex = Object.keys(nextEvents).reduce((max, key) => {
+        const idx = Number(key);
+        return Number.isFinite(idx) ? Math.max(max, idx) : max;
+      }, -1);
+      const nextNumDays = Math.max(snapshot.numDays + offset, maxIndex + 1);
+
+      setStartDate(shiftedStartDate);
+      setDayViewIndex(snapshot.dayViewIndex + offset);
+      setNumDays(nextNumDays);
+      setEvents(nextEvents);
+
+      return {
+        created,
+        unresolvedPlaces: [...unresolvedPlaces],
+        skippedInvalid,
+        skippedOverlap,
+      };
+    },
+    []
+  );
+
+  const handleAiMessage = useCallback(
+    async (text: string) => {
+      if (!currentCalendarId || aiLoading) return;
+
+      const requestCalendarId = currentCalendarId;
+      const userMessage: AiChatMessage = { id: generateId(), role: 'user', text };
+      appendAiMessage(requestCalendarId, userMessage);
+      setAiLoading(true);
+
+      const requestMessages = [
+        ...(aiMessagesByCalendar[requestCalendarId] ?? DEFAULT_AI_MESSAGES),
+        userMessage,
+      ];
+
+      const snapshot: RollbackSnapshot = {
+        events: cloneEvents(events),
+        numDays,
+        startDateIso: startDate.toISOString(),
+        dayViewIndex,
+      };
+
+      const calendarStartLocal = toLocalIsoDate(startDate);
+      const calendarEndLocal = toLocalIsoDate(addDays(startDate, numDays - 1));
+      const existingEvents = serializeCalendarEventsForAi(events, startDate);
+
+      try {
+        const response = await fetch('/api/ai/plan-events', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: requestMessages.map((message) => ({ role: message.role, text: message.text })),
+            context: {
+              calendarStartDate: calendarStartLocal,
+              calendarEndDate: calendarEndLocal,
+              visibleDays: numDays,
+              dayStartHour: startHour,
+              dayEndHour: endHour,
+              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+              existingEvents,
+            },
+          }),
+        });
+
+        const payload = (await response.json()) as AiPlanResponse;
+
+        if (!response.ok) {
+          const detail = [payload.error, payload.detail].filter(Boolean).join(' ');
+          throw new Error(detail || 'The AI planner request failed.');
+        }
+
+        const assistantMessage =
+          payload.assistantMessage?.trim() ||
+          'Please provide a little more detail so I can schedule this accurately.';
+
+        if (currentCalendarIdRef.current !== requestCalendarId) {
+          appendAiAssistantMessage(
+            requestCalendarId,
+            `${assistantMessage}\nYou switched calendars before I could apply the result. Re-open this calendar and run it again.`,
+            'error'
+          );
+          return;
+        }
+
+        if (payload.status === 'ready' && Array.isArray(payload.events) && payload.events.length > 0) {
+          const result = await applyPlannedEvents(payload.events, snapshot);
+
+          const lines = [assistantMessage];
+          lines.push(`Added ${result.created} event${result.created === 1 ? '' : 's'} to your calendar.`);
+
+          if (result.skippedOverlap > 0) {
+            lines.push(
+              `Skipped ${result.skippedOverlap} event${result.skippedOverlap === 1 ? '' : 's'} because they overlap existing events.`
+            );
+          }
+
+          if (result.skippedInvalid > 0) {
+            lines.push(
+              `Skipped ${result.skippedInvalid} item${result.skippedInvalid === 1 ? '' : 's'} due to invalid or missing date/time.`
+            );
+          }
+
+          if (result.unresolvedPlaces.length > 0) {
+            lines.push(
+              `I could not resolve these locations automatically: ${result.unresolvedPlaces.join(', ')}`
+            );
+          }
+
+          if (result.created > 0) {
+            setAiRollbackByCalendar((prev) => ({ ...prev, [requestCalendarId]: snapshot }));
+            lines.push('Use Rollback to undo this AI-generated batch.');
+          }
+
+          appendAiAssistantMessage(
+            requestCalendarId,
+            lines.join('\n'),
+            result.created > 0 ? 'success' : 'error'
+          );
+        } else {
+          appendAiAssistantMessage(requestCalendarId, assistantMessage);
+        }
+      } catch (err) {
+        const message =
+          err instanceof Error
+            ? err.message
+            : 'Unable to contact the AI planner. Make sure Ollama is running locally.';
+        appendAiAssistantMessage(requestCalendarId, message, 'error');
+      } finally {
+        setAiLoading(false);
+      }
+    },
+    [
+      currentCalendarId,
+      aiLoading,
+      aiMessagesByCalendar,
+      events,
+      numDays,
+      startDate,
+      dayViewIndex,
+      startHour,
+      endHour,
+      appendAiMessage,
+      appendAiAssistantMessage,
+      applyPlannedEvents,
+    ]
+  );
+
+  const handleAiRollback = useCallback(() => {
+    if (!currentCalendarId) return;
+
+    const snapshot = aiRollbackByCalendar[currentCalendarId];
+    if (!snapshot) return;
+
+    setEvents(cloneEvents(snapshot.events));
+    setNumDays(snapshot.numDays);
+    setStartDate(new Date(snapshot.startDateIso));
+    setDayViewIndex(snapshot.dayViewIndex);
+
+    setAiRollbackByCalendar((prev) => ({ ...prev, [currentCalendarId]: null }));
+    appendAiAssistantMessage(currentCalendarId, 'Rolled back the last AI-generated event batch.', 'success');
+  }, [currentCalendarId, aiRollbackByCalendar, appendAiAssistantMessage]);
 
   // Load a specific calendar by ID
   const loadCalendar = useCallback(async (calId: string) => {
@@ -111,18 +658,15 @@ function App() {
       .then((list: { id: string; name: string; updatedAt: string }[]) => {
         setApiOnline(true);
         if (list.length === 0) {
-          // No calendars — show manager so user can create one
           setShowCalendarManager(true);
           setIsLoaded(true);
         } else {
-          // Load the most recent calendar
           const mostRecent = list[0];
           loadCalendar(mostRecent.id).then(() => setIsLoaded(true));
         }
       })
       .catch((err) => {
         console.error('Failed to list calendars:', err);
-        // Fallback to legacy endpoint
         fetch('/api/calendar')
           .then((res) => {
             if (!res.ok) throw new Error('Failed to load');
@@ -216,7 +760,6 @@ function App() {
       });
   }, [isLoaded, apiOnline, currentCalendarId, numDays, startDate, startHour, endHour, viewMode, events]);
 
-  // Clamp dayViewIndex when numDays or viewMode changes
   useEffect(() => {
     if (dayViewIndex >= numDays) {
       setDayViewIndex(Math.max(0, numDays - 1));
@@ -238,8 +781,8 @@ function App() {
   const handleBlockUpdated = useCallback((updated: TimeBlock) => {
     setEvents((prev) => ({
       ...prev,
-      [updated.dayIndex]: (prev[updated.dayIndex] || []).map((b) =>
-        b.id === updated.id ? updated : b
+      [updated.dayIndex]: (prev[updated.dayIndex] || []).map((block) =>
+        block.id === updated.id ? updated : block
       ),
     }));
   }, []);
@@ -247,7 +790,7 @@ function App() {
   const handleBlockDeleted = useCallback((block: TimeBlock) => {
     setEvents((prev) => ({
       ...prev,
-      [block.dayIndex]: (prev[block.dayIndex] || []).filter((b) => b.id !== block.id),
+      [block.dayIndex]: (prev[block.dayIndex] || []).filter((item) => item.id !== block.id),
     }));
   }, []);
 
@@ -291,8 +834,6 @@ function App() {
     setDayViewIndex(index);
   }, []);
 
-  // ─── Calendar Manager handlers ───
-
   const handleSelectCalendar = useCallback(async (id: string) => {
     await loadCalendar(id);
     setShowCalendarManager(false);
@@ -332,6 +873,7 @@ function App() {
   const handleDeleteCalendarFromManager = useCallback(async (id: string) => {
     try {
       await fetch(`/api/calendars/${id}`, { method: 'DELETE' });
+      clearAiStateForCalendar(id);
       if (id === currentCalendarId) {
         setCurrentCalendarId(null);
         setCurrentCalendarName('');
@@ -340,7 +882,7 @@ function App() {
     } catch (err) {
       console.error('Failed to delete calendar:', err);
     }
-  }, [currentCalendarId, applyCalendarState]);
+  }, [currentCalendarId, applyCalendarState, clearAiStateForCalendar]);
 
   const handleDeleteCurrentCalendar = useCallback(async () => {
     if (!currentCalendarId) return;
@@ -349,6 +891,7 @@ function App() {
 
     try {
       await fetch(`/api/calendars/${currentCalendarId}`, { method: 'DELETE' });
+      clearAiStateForCalendar(currentCalendarId);
       setCurrentCalendarId(null);
       setCurrentCalendarName('');
       applyCalendarState(DEFAULT_CALENDAR_STATE);
@@ -356,9 +899,8 @@ function App() {
     } catch (err) {
       console.error('Failed to delete calendar:', err);
     }
-  }, [currentCalendarId, currentCalendarName, applyCalendarState]);
+  }, [currentCalendarId, currentCalendarName, applyCalendarState, clearAiStateForCalendar]);
 
-  // In Day view, only pass events for the selected day to the map
   const mapEvents = useMemo(() => {
     if (viewMode === 'day') {
       const dayEvents = events[dayViewIndex];
@@ -372,13 +914,15 @@ function App() {
   if (!isLoaded) {
     return (
       <AppShell>
-        <div style={{
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          height: '100vh',
-          color: 'var(--text-med)'
-        }}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            height: '100vh',
+            color: 'var(--text-med)',
+          }}
+        >
           Loading calendar...
         </div>
       </AppShell>
@@ -450,7 +994,6 @@ function App() {
         )}
       </div>
 
-      {/* Calendar Manager Modal */}
       <CalendarManager
         visible={showCalendarManager}
         currentCalendarId={currentCalendarId}
@@ -459,6 +1002,16 @@ function App() {
         onRenameCalendar={handleRenameCalendar}
         onDeleteCalendar={handleDeleteCalendarFromManager}
         onClose={() => setShowCalendarManager(false)}
+      />
+
+      <AiPlannerChat
+        messages={currentAiMessages}
+        loading={aiLoading}
+        onSendMessage={handleAiMessage}
+        disabled={!currentCalendarId}
+        disabledHint="Select or create a calendar first, then ask me to schedule your travel plans."
+        canRollback={canRollbackAiChanges}
+        onRollback={handleAiRollback}
       />
     </AppShell>
   );

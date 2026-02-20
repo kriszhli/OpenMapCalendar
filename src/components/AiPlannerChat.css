@@ -1,0 +1,192 @@
+.ai-chat-root {
+    position: fixed;
+    right: 24px;
+    bottom: 22px;
+    z-index: 1400;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 12px;
+}
+
+.ai-chat-fab {
+    width: 58px;
+    height: 58px;
+    border-radius: 999px;
+    display: grid;
+    place-items: center;
+    color: #fff;
+    background: linear-gradient(135deg, #4f85f1 0%, #00a39a 100%);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
+    transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.ai-chat-fab:hover {
+    transform: translateY(-1px) scale(1.02);
+    box-shadow: 0 20px 38px rgba(0, 0, 0, 0.38);
+}
+
+.ai-chat-fab.open {
+    background: linear-gradient(135deg, #4667a1 0%, #2d568b 100%);
+}
+
+.ai-chat-panel {
+    width: 360px;
+    max-width: calc(100vw - 30px);
+    max-height: min(72vh, 620px);
+    border-radius: 16px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--glow-accent);
+    box-shadow: 0 24px 58px rgba(0, 0, 0, 0.45);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.ai-chat-header {
+    padding: 14px 14px 12px;
+    border-bottom: 1px solid var(--glow-soft);
+    background: linear-gradient(180deg, rgba(91, 127, 191, 0.18), rgba(91, 127, 191, 0.02));
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.ai-chat-title-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.ai-chat-title {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--text-high);
+}
+
+.ai-chat-subtitle {
+    font-size: 11px;
+    color: var(--text-med);
+}
+
+.ai-chat-rollback {
+    height: 28px;
+    border-radius: 8px;
+    border: 1px solid rgba(196, 123, 107, 0.4);
+    background: rgba(196, 123, 107, 0.14);
+    color: var(--text-high);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 0 10px;
+}
+
+.ai-chat-rollback:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.ai-chat-messages {
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    overflow-y: auto;
+    min-height: 220px;
+    flex: 1;
+}
+
+.ai-chat-bubble {
+    font-size: 13px;
+    line-height: 1.45;
+    padding: 9px 10px;
+    border-radius: 10px;
+    max-width: 92%;
+    white-space: pre-wrap;
+}
+
+.ai-chat-bubble.assistant {
+    align-self: flex-start;
+    background: rgba(91, 127, 191, 0.14);
+    color: var(--text-high);
+    border: 1px solid rgba(91, 127, 191, 0.22);
+}
+
+.ai-chat-bubble.user {
+    align-self: flex-end;
+    background: rgba(123, 168, 135, 0.24);
+    color: var(--text-high);
+    border: 1px solid rgba(123, 168, 135, 0.3);
+}
+
+.ai-chat-bubble.pending {
+    opacity: 0.8;
+    font-style: italic;
+}
+
+.ai-chat-bubble.error {
+    background: rgba(196, 123, 107, 0.2);
+    border-color: rgba(196, 123, 107, 0.42);
+}
+
+.ai-chat-bubble.success {
+    background: rgba(123, 168, 135, 0.2);
+    border-color: rgba(123, 168, 135, 0.4);
+}
+
+.ai-chat-status {
+    font-size: 12px;
+    color: var(--text-med);
+    text-align: center;
+    padding: 4px;
+}
+
+.ai-chat-input-row {
+    display: flex;
+    gap: 8px;
+    border-top: 1px solid var(--glow-soft);
+    padding: 10px 12px 12px;
+}
+
+.ai-chat-input {
+    flex: 1;
+    background: var(--card);
+    border: 1px solid var(--glow-accent);
+    border-radius: 9px;
+    height: 36px;
+    padding: 0 10px;
+    font-size: 13px;
+}
+
+.ai-chat-input:focus {
+    border-color: rgba(91, 127, 191, 0.6);
+    box-shadow: 0 0 0 3px rgba(91, 127, 191, 0.2);
+}
+
+.ai-chat-send {
+    padding: 0 12px;
+    height: 36px;
+    border-radius: 9px;
+    font-size: 12px;
+    font-weight: 600;
+    background: var(--color-blue);
+    color: #fff;
+    transition: opacity 0.2s ease;
+}
+
+.ai-chat-send:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+@media (max-width: 720px) {
+    .ai-chat-root {
+        right: 14px;
+        bottom: 14px;
+    }
+
+    .ai-chat-panel {
+        width: min(100vw - 20px, 420px);
+        max-height: 70vh;
+    }
+}
