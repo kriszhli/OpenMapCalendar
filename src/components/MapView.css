@@ -78,6 +78,21 @@
         stroke-width 0.3s ease-out !important;
 }
 
+.map-route-arrow-icon {
+    background: transparent;
+    border: none;
+}
+
+.map-route-arrow {
+    display: inline-block;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1;
+    opacity: 0.78;
+    text-shadow: 0 0 6px rgba(0, 0, 0, 0.35);
+    pointer-events: none;
+}
+
 .map-container .leaflet-tooltip.map-tooltip {
     background: rgba(8, 10, 14, 0.82);
     border: 1px solid rgba(255, 255, 255, 0.14);
@@ -96,6 +111,17 @@
     font-size: 11px;
     font-weight: 600;
     line-height: 1.2;
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+}
+
+.map-tooltip-time {
+    display: inline-block;
+}
+
+.map-tooltip-title {
+    display: inline-block;
 }
 
 /* Empty state overlay */

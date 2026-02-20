@@ -71,6 +71,7 @@ const MapView: React.FC<MapViewProps> = ({
     const markersRef = useRef<Map<string, L.CircleMarker[]>>(new Map());
     const glowMarkersRef = useRef<Map<string, L.CircleMarker[]>>(new Map());
     const routesRef = useRef<Map<string, L.Polyline>>(new Map());
+    const routeArrowsRef = useRef<Map<string, L.Marker[]>>(new Map());
 
     // Group located events by day and sort by start time.
     const dayLocatedEvents = useMemo(() => {
@@ -212,9 +213,11 @@ const MapView: React.FC<MapViewProps> = ({
         markersRef.current.forEach((ms) => ms.forEach((m) => m.remove()));
         glowMarkersRef.current.forEach((ms) => ms.forEach((m) => m.remove()));
         routesRef.current.forEach((r) => r.remove());
+        routeArrowsRef.current.forEach((ms) => ms.forEach((m) => m.remove()));
         markersRef.current.clear();
         glowMarkersRef.current.clear();
         routesRef.current.clear();
+        routeArrowsRef.current.clear();
 
         const bounds: L.LatLng[] = [];
         const labelClusterCounts = new Map<string, number>();
@@ -224,7 +227,8 @@ const MapView: React.FC<MapViewProps> = ({
             latlng: L.LatLng,
             color: string,
             eventId: string,
-            tooltipText: string,
+            timeText: string,
+            titleText: string,
         ): { marker: L.CircleMarker; glow: L.CircleMarker } => {
             const glow = L.circleMarker(latlng, {
                 radius: 20,
@@ -251,7 +255,10 @@ const MapView: React.FC<MapViewProps> = ({
             const placement = tooltipPlacements[clusterIndex % tooltipPlacements.length];
 
             marker.bindTooltip(
-                `<span class="map-tooltip-label" style="color: ${color}">${escapeHtml(tooltipText)}</span>`,
+                `<span class="map-tooltip-label" style="color: ${color}">
+                    <span class="map-tooltip-time">${escapeHtml(timeText)}</span>
+                    <span class="map-tooltip-title">&nbsp;|&nbsp;${escapeHtml(titleText)}</span>
+                </span>`,
                 {
                 permanent: true,
                 direction: placement.direction,
@@ -270,7 +277,6 @@ const MapView: React.FC<MapViewProps> = ({
                 marker.setStyle({ fillOpacity: 1, radius: 8, opacity: 0.5 });
                 glow.setStyle({ opacity: 0, fillOpacity: 0 });
             });
-
             return { marker, glow };
         };
 
@@ -281,6 +287,38 @@ const MapView: React.FC<MapViewProps> = ({
             startLatLng: L.LatLng,
             endLatLng: L.LatLng
         ) => {
+            const addRouteArrows = (coords: L.LatLngTuple[]) => {
+                if (coords.length < 3) return;
+                const arrowCount = Math.max(2, Math.min(7, Math.floor(coords.length / 10)));
+                const arrowMarkers: L.Marker[] = [];
+
+                for (let i = 1; i <= arrowCount; i++) {
+                    const t = i / (arrowCount + 1);
+                    const idx = Math.max(0, Math.min(coords.length - 2, Math.floor(t * (coords.length - 1))));
+                    const from = L.latLng(coords[idx][0], coords[idx][1]);
+                    const to = L.latLng(coords[idx + 1][0], coords[idx + 1][1]);
+                    const p1 = map.latLngToLayerPoint(from);
+                    const p2 = map.latLngToLayerPoint(to);
+                    const angleDeg = (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI;
+
+                    const marker = L.marker(from, {
+                        interactive: false,
+                        keyboard: false,
+                        zIndexOffset: 200,
+                        icon: L.divIcon({
+                            className: 'map-route-arrow-icon',
+                            html: `<span class="map-route-arrow" style="color:${color};transform:rotate(${angleDeg}deg)">›</span>`,
+                            iconSize: [14, 14],
+                            iconAnchor: [7, 7],
+                        }),
+                    }).addTo(map);
+
+                    arrowMarkers.push(marker);
+                }
+
+                routeArrowsRef.current.set(ev.id, arrowMarkers);
+            };
+
             if (mode === 'precise') {
                 const cache = ev.preciseRouteCache;
                 const hasValidCache =
@@ -309,6 +347,7 @@ const MapView: React.FC<MapViewProps> = ({
                     });
 
                     routesRef.current.set(ev.id, polyline);
+                    addRouteArrows(cache.coords as L.LatLngTuple[]);
                     return;
                 }
 
@@ -336,6 +375,7 @@ const MapView: React.FC<MapViewProps> = ({
                     });
 
                     routesRef.current.set(ev.id, polyline);
+                    addRouteArrows(coords);
 
                     const newCache: PreciseRouteCache = {
                         from: { name: '', lat: startLatLng.lat, lng: startLatLng.lng },
@@ -386,6 +426,7 @@ const MapView: React.FC<MapViewProps> = ({
             });
 
             routesRef.current.set(ev.id, polyline);
+            addRouteArrows(curvePoints);
         };
 
         dayLocatedEvents.forEach(({ events: dayEvents }) => {
@@ -404,7 +445,8 @@ const MapView: React.FC<MapViewProps> = ({
                         latlng,
                         color,
                         ev.id,
-                        `${startTimeLabel} | ${eventTitle}`
+                        startTimeLabel,
+                        eventTitle
                     );
                     eventMarkers.push(marker);
                     eventGlows.push(glow);
@@ -417,7 +459,8 @@ const MapView: React.FC<MapViewProps> = ({
                         latlng,
                         color,
                         ev.id,
-                        `${endTimeLabel} | ${eventTitle}`
+                        endTimeLabel,
+                        eventTitle
                     );
                     eventMarkers.push(marker);
                     eventGlows.push(glow);
