@@ -272,6 +272,10 @@ const cloneEvents = (source: Record<number, TimeBlock[]>): Record<number, TimeBl
 const hasTimeOverlap = (aStart: number, aEnd: number, bStart: number, bEnd: number): boolean =>
   aStart < bEnd && aEnd > bStart;
 
+const isClarificationLike = (text: string): boolean =>
+  /(?:exact|specific|which|what)\s+date/i.test(text) ||
+  /please\s+(?:provide|specify)/i.test(text);
+
 const serializeCalendarEventsForAi = (
   eventsByDay: Record<number, TimeBlock[]>,
   calendarStartDate: Date
@@ -693,7 +697,7 @@ function App() {
         if (currentCalendarIdRef.current !== requestCalendarId) {
           appendAiAssistantMessage(
             requestCalendarId,
-            `${assistantMessage}\nYou switched calendars before I could apply the result. Re-open this calendar and run it again.`,
+            'You switched calendars before this request completed.',
             'error'
           );
           return;
@@ -701,38 +705,24 @@ function App() {
 
         if (payload.status === 'ready' && Array.isArray(payload.events) && payload.events.length > 0) {
           const result = await applyPlannedEvents(payload.events, snapshot);
-
-          const lines = [assistantMessage];
-          lines.push(`Added ${result.created} event${result.created === 1 ? '' : 's'} to your calendar.`);
-
-          if (result.skippedOverlap > 0) {
-            lines.push(
-              `Skipped ${result.skippedOverlap} event${result.skippedOverlap === 1 ? '' : 's'} because they overlap existing events.`
-            );
-          }
-
-          if (result.skippedInvalid > 0) {
-            lines.push(
-              `Skipped ${result.skippedInvalid} item${result.skippedInvalid === 1 ? '' : 's'} due to invalid or missing date/time.`
-            );
-          }
-
-          if (result.unresolvedPlaces.length > 0) {
-            lines.push(
-              `I could not resolve these locations automatically: ${result.unresolvedPlaces.join(', ')}`
-            );
-          }
-
           if (result.created > 0) {
             setAiRollbackByCalendar((prev) => ({ ...prev, [requestCalendarId]: snapshot }));
-            lines.push('Use Rollback to undo this AI-generated batch.');
           }
 
-          appendAiAssistantMessage(
-            requestCalendarId,
-            lines.join('\n'),
-            result.created > 0 ? 'success' : 'error'
-          );
+          const compactParts = [`Added ${result.created} event${result.created === 1 ? '' : 's'}.`];
+          if (result.skippedOverlap > 0) {
+            compactParts.push(`Skipped ${result.skippedOverlap} overlap${result.skippedOverlap === 1 ? '' : 's'}.`);
+          }
+          if (result.skippedInvalid > 0) {
+            compactParts.push(`Skipped ${result.skippedInvalid} invalid item${result.skippedInvalid === 1 ? '' : 's'}.`);
+          }
+          if (result.unresolvedPlaces.length > 0) {
+            compactParts.push('Some locations need manual selection.');
+          }
+
+          const prefix = !isClarificationLike(assistantMessage) ? assistantMessage : '';
+          const finalMessage = [prefix, compactParts.join(' ')].filter(Boolean).join(' ').trim();
+          appendAiAssistantMessage(requestCalendarId, finalMessage, result.created > 0 ? 'success' : 'error');
         } else {
           appendAiAssistantMessage(requestCalendarId, assistantMessage);
         }

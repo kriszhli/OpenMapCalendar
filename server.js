@@ -116,6 +116,27 @@ const cleanString = (value, maxLen = 500) =>
 
 const isIsoDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value);
 const is24hTime = (value) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+const PLACEHOLDER_PLACES = new Set([
+    'free-text place',
+    'free text place',
+    'string',
+    'tbd',
+    'n/a',
+    'unknown',
+]);
+
+const sanitizePlaceText = (value) => {
+    const cleaned = cleanString(value, 160);
+    if (!cleaned) return '';
+    return PLACEHOLDER_PLACES.has(cleaned.toLowerCase()) ? '' : cleaned;
+};
+
+const toConciseMessage = (message, fallback) => {
+    const cleaned = cleanString(message, 600);
+    if (!cleaned) return fallback;
+    const firstSentence = cleaned.match(/^(.+?[.!?])(?:\s|$)/)?.[1] || cleaned;
+    return cleanString(firstSentence, 220) || fallback;
+};
 
 const parseModelJson = (content) => {
     const text = cleanString(content, 10000);
@@ -152,8 +173,8 @@ const sanitizeAiEvent = (raw) => {
     const date = cleanString(raw.date, 10);
     const startTime = cleanString(raw.startTime ?? raw.start, 5);
     const endTime = cleanString(raw.endTime ?? raw.end, 5);
-    const origin = cleanString(raw.origin ?? raw.location ?? raw.from, 160);
-    const destination = cleanString(raw.destination ?? raw.to, 160);
+    const origin = sanitizePlaceText(raw.origin ?? raw.location ?? raw.from);
+    const destination = sanitizePlaceText(raw.destination ?? raw.to);
     const color = cleanString(raw.color, 20);
 
     if (!title || !isIsoDate(date) || !is24hTime(startTime) || !is24hTime(endTime)) {
@@ -341,13 +362,17 @@ const normalizeAiPlan = (raw) => {
 
     const fallbackMessage =
         status === 'ready'
-            ? `I found ${events.length} event${events.length === 1 ? '' : 's'} to add.`
-            : 'I need a bit more detail to schedule this accurately. Please clarify exact date/time or locations.';
+            ? `Added ${events.length} event${events.length === 1 ? '' : 's'}.`
+            : 'Need one more detail to schedule this correctly.';
 
-    const assistantMessage = cleanString(
+    let assistantMessage = toConciseMessage(
         source.assistantMessage ?? source.message ?? source.reply,
-        1200
-    ) || fallbackMessage;
+        fallbackMessage
+    );
+
+    if (status === 'ready' && isDateClarificationMessage(assistantMessage)) {
+        assistantMessage = fallbackMessage;
+    }
 
     return { status, assistantMessage, events };
 };
