@@ -2,6 +2,8 @@
 
 Plan schedules and movement together: calendar timeline + live map + local AI planner.
 
+![Demo GIF](/docs/screenshots/DEMO.gif)
+
 ## Why This Project
 
 Most calendar apps ignore location context. This project combines:
