@@ -289,6 +289,7 @@
     padding: 6px 12px 10px 12px;
     cursor: text;
     min-height: 0;
+    display: flex;
     transition: background 0.2s ease;
 }
 
@@ -301,6 +302,7 @@
 }
 
 .event-block-description {
+    flex: 1;
     font-size: 12px;
     font-weight: 400;
     color: var(--text-med);
@@ -311,7 +313,9 @@
     padding: 0;
     resize: none;
     line-height: 1.5;
-    min-height: 16px;
+    min-height: 0;
+    height: 100%;
+    overflow-y: auto;
     cursor: text;
 }
 
