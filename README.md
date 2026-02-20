@@ -23,6 +23,20 @@ npm run dev
 - App: `http://localhost:5173`
 - API: `http://localhost:3000`
 
+### 1b. Host on LAN (`npm run host`)
+
+Use this when you want phones/laptops on the same Wi-Fi to open the same calendar server.
+
+```bash
+npm install
+npm run host
+```
+
+Then:
+- Find your machine LAN IP (example: `192.168.1.23`).
+- Open `http://<LAN_IP>:3000` on other devices.
+- Keep the terminal running while others use it.
+
 ### 2. Create or open a calendar
 
 - On first launch, create a calendar in **Calendar Manager**.
