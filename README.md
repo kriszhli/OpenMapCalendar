@@ -138,6 +138,18 @@ python3 -m planner_service --smoke "On the second day, schedule a museum visit a
 
 `npm run dev` starts the planner service automatically alongside the Node server and Vite client.
 
+### MCP read helpers
+
+The planner can load read-only MCP servers for weather, routing, and place normalization.
+These helpers are used for planning and validation only. All schedule writes stay local to the
+calendar JSON data the frontend already reads and saves.
+
+Optional config:
+- `PLANNER_MCP_CONFIG` - path to a local JSON file with MCP server definitions
+- `PLANNER_MCP_SERVERS` - inline JSON override for server definitions
+
+If no MCP servers are available, the planner falls back to local deterministic helpers.
+
 ## Scripts
 
 - `npm run dev` - API + Vite

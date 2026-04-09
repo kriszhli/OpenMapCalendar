@@ -3,9 +3,9 @@ from __future__ import annotations
 from argparse import ArgumentParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-from pathlib import Path
 from typing import Any
 
+from .mcp import MCPRegistry, build_mcp_registry
 from .export import export_training_rows
 from .graph import run_planner_graph
 
@@ -72,6 +72,7 @@ class PlannerHandler(BaseHTTPRequestHandler):
                 model=server.model,
                 timeout_seconds=server.timeout_seconds,
                 data_root=server.data_root,
+                mcp_registry=server.mcp_registry,
             )
             response = state.get("response") or {
                 "status": "needs_clarification",
@@ -105,12 +106,14 @@ class PlannerHTTPServer(ThreadingHTTPServer):
         model: str,
         timeout_seconds: float,
         data_root: str,
+        mcp_registry: MCPRegistry | None,
     ) -> None:
         super().__init__(address, handler)
         self.ollama_url = ollama_url
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.data_root = data_root
+        self.mcp_registry = mcp_registry
 
 
 def _default_smoke_payload(prompt: str) -> dict[str, Any]:
@@ -142,12 +145,14 @@ def run_smoke(
 ) -> int:
     payload = _default_smoke_payload(prompt)
     payload["calendarId"] = "smoke-calendar"
+    mcp_registry = build_mcp_registry(data_root=data_root)
     state = run_planner_graph(
         payload,
         ollama_url=ollama_url,
         model=model,
         timeout_seconds=timeout_seconds,
         data_root=data_root,
+        mcp_registry=mcp_registry,
     )
 
     if verbose:
@@ -171,6 +176,7 @@ def run_server(
     timeout_seconds: float,
     data_root: str,
 ) -> int:
+    mcp_registry = build_mcp_registry(data_root=data_root)
     server = PlannerHTTPServer(
         (host, port),
         PlannerHandler,
@@ -178,6 +184,7 @@ def run_server(
         model=model,
         timeout_seconds=timeout_seconds,
         data_root=data_root,
+        mcp_registry=mcp_registry,
     )
     print(f"Planner service running at http://{host}:{port}")
     print(f"Ollama: {ollama_url}")

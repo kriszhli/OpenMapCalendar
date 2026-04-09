@@ -6,6 +6,7 @@ import sqlite3
 from typing import Any, Callable, Literal, NotRequired, TypedDict
 
 from .distillation import distill_session_log
+from .mcp import MCPRegistry, build_mcp_registry
 from .memory import LongTermMemoryStore, sanitize_query_text
 from .paths import build_planner_paths
 from .persistence import (
@@ -15,7 +16,7 @@ from .persistence import (
     tail_context_from_events,
     utc_now_iso,
 )
-from .tools import MockCalendarTool, MockWeatherTool
+from .tools import MockCalendarTool, MockLocationTool, MockRouteTool, MockWeatherTool
 
 try:
     from langgraph.graph import END, StateGraph  # type: ignore
@@ -36,8 +37,9 @@ class ChatMessage(TypedDict):
 
 class TaskItem(TypedDict, total=False):
     id: str
-    tool: Literal["calendar_mock", "weather_mock"]
+    tool: Literal["calendar_mock", "weather_mock", "mcp_read"]
     action: str
+    capability: NotRequired[Literal["weather", "route", "place", "context"]]
     date: str
     start_time: NotRequired[str]
     end_time: NotRequired[str]
@@ -90,6 +92,215 @@ DEFAULT_BUFFER_MINUTES = 30
 LUNCH_START_MINUTES = 12 * 60
 LUNCH_END_MINUTES = 13 * 60
 BAD_WEATHER_KEYWORDS = {"rain", "windy", "storm", "snow", "sleet", "hail"}
+
+
+class ReadContextService:
+    def __init__(self, registry: MCPRegistry | None) -> None:
+        self.registry = registry
+        if registry is not None:
+            registry.discover()
+        self.discovery_summary = registry.discovery_summary() if registry is not None else {
+            "servers": [],
+            "tools": [],
+            "available_capabilities": [],
+            "fallback": "local-mock-only",
+        }
+
+    def summary_text(self) -> str:
+        capabilities = ", ".join(self.discovery_summary.get("available_capabilities") or [])
+        server_statuses = ", ".join(
+            f"{item.get('name', '')}:{item.get('status', 'unknown')}"
+            for item in self.discovery_summary.get("servers") or []
+            if isinstance(item, dict)
+        )
+        if not capabilities and not server_statuses:
+            return "local-mock-only"
+        parts = []
+        if capabilities:
+            parts.append(f"capabilities={capabilities}")
+        if server_statuses:
+            parts.append(f"servers={server_statuses}")
+        return "; ".join(parts)
+
+    def _log_mcp_call(
+        self,
+        context: dict[str, Any],
+        *,
+        run_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        _log_event(context, "mcp_tool_call", payload, run_id=run_id)
+
+    def _log_mcp_result(
+        self,
+        context: dict[str, Any],
+        *,
+        run_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        _log_event(context, "mcp_tool_result", payload, run_id=run_id)
+
+    def _call_capability(
+        self,
+        capability: str,
+        *,
+        arguments: dict[str, Any],
+        purpose: str,
+        context: dict[str, Any],
+        run_id: str,
+    ) -> dict[str, Any]:
+        if self.registry is None:
+            return {}
+        result = self.registry.call(capability, arguments=arguments, purpose=purpose)
+        self._log_mcp_call(
+            context,
+            run_id=run_id,
+            payload={
+                "capability": capability,
+                "purpose": purpose,
+                "server_name": result.server_name,
+                "transport": result.transport,
+                "tool_name": result.tool_name,
+                "request": result.request,
+                "status": result.status,
+            },
+        )
+        self._log_mcp_result(
+            context,
+            run_id=run_id,
+            payload={
+                "capability": capability,
+                "purpose": purpose,
+                "server_name": result.server_name,
+                "transport": result.transport,
+                "tool_name": result.tool_name,
+                "status": result.status,
+                "source": result.source,
+                "request": result.request,
+                "response": result.response,
+                "error": result.error,
+            },
+        )
+        if not result.ok:
+            return {}
+        return result.response
+
+    def weather_forecast(
+        self,
+        *,
+        date: str,
+        location: str,
+        context: dict[str, Any],
+        run_id: str,
+    ) -> dict[str, Any]:
+        request = {"date": date, "location": location}
+        response = self._call_capability(
+            "weather",
+            arguments=request,
+            purpose="weather forecast for scheduling",
+            context=context,
+            run_id=run_id,
+        )
+        if response:
+            normalized = {
+                "source": "mcp",
+                "date": _clean_text(response.get("date") or date, 20),
+                "location": _clean_text(response.get("location") or location, 120),
+                "condition": _clean_text(response.get("condition") or response.get("summary") or response.get("forecast") or "", 120),
+                "high_f": response.get("high_f") or response.get("high") or response.get("temperature_high"),
+                "low_f": response.get("low_f") or response.get("low") or response.get("temperature_low"),
+                "humidity_pct": response.get("humidity_pct") or response.get("humidity"),
+                "summary": _clean_text(
+                    response.get("summary")
+                    or response.get("forecast")
+                    or response.get("conditions")
+                    or "Live weather forecast available.",
+                    240,
+                ),
+                "raw": response,
+            }
+            return normalized
+
+        fallback = MockWeatherTool.forecast(date=date, location=location)
+        fallback["source"] = "mock"
+        return fallback
+
+    def normalize_place(
+        self,
+        *,
+        query: str,
+        focus: dict[str, float] | None,
+        context: dict[str, Any],
+        run_id: str,
+    ) -> dict[str, Any]:
+        request = {"query": query, "focus": focus or {}}
+        response = self._call_capability(
+            "place",
+            arguments=request,
+            purpose="normalize a location label for route-aware planning",
+            context=context,
+            run_id=run_id,
+        )
+        if response:
+            lat = response.get("lat") or response.get("latitude")
+            lng = response.get("lng") or response.get("lon") or response.get("longitude")
+            normalized_name = _clean_text(
+                response.get("name")
+                or response.get("display_name")
+                or response.get("formatted_address")
+                or query,
+                120,
+            )
+            return {
+                "query": query,
+                "name": normalized_name or query,
+                "display_name": _clean_text(response.get("display_name") or normalized_name or query, 240),
+                "lat": lat,
+                "lng": lng,
+                "source": "mcp",
+                "raw": response,
+            }
+        return MockLocationTool.normalize_place(query, focus=focus)
+
+    def route_summary(
+        self,
+        *,
+        origin: str,
+        destination: str,
+        context: dict[str, Any],
+        run_id: str,
+    ) -> dict[str, Any]:
+        request = {"origin": origin, "destination": destination, "mode": "driving"}
+        response = self._call_capability(
+            "route",
+            arguments=request,
+            purpose="estimate travel time for scheduling buffers",
+            context=context,
+            run_id=run_id,
+        )
+        if response:
+            duration = response.get("duration_minutes") or response.get("duration") or response.get("travel_minutes")
+            distance = response.get("distance_km") or response.get("distance")
+            summary = _clean_text(
+                response.get("summary")
+                or response.get("instructions")
+                or response.get("description")
+                or f"Live route available between {origin} and {destination}.",
+                240,
+            )
+            origin_payload = response.get("origin") if isinstance(response.get("origin"), dict) else {}
+            destination_payload = response.get("destination") if isinstance(response.get("destination"), dict) else {}
+            return {
+                "origin": origin_payload or {"name": origin},
+                "destination": destination_payload or {"name": destination},
+                "mode": response.get("mode") or "driving",
+                "distance_km": distance,
+                "duration_minutes": duration,
+                "summary": summary,
+                "source": "mcp",
+                "raw": response,
+            }
+        return MockRouteTool.estimate_route(origin=origin, destination=destination)
 
 
 def _clean_text(value: Any, max_len: int = 400) -> str:
@@ -224,6 +435,29 @@ def _time_to_minutes(value: str) -> int | None:
 def _minutes_to_time(value: int) -> str:
     value = max(0, min(23 * 60 + 59, int(value)))
     return f"{value // 60:02d}:{value % 60:02d}"
+
+
+def _block_buffer_minutes(block: dict[str, Any]) -> int:
+    try:
+        value = int(block.get("buffer_minutes") or DEFAULT_BUFFER_MINUTES)
+    except Exception:
+        value = DEFAULT_BUFFER_MINUTES
+    return max(DEFAULT_BUFFER_MINUTES, value)
+
+
+def _travel_buffer_minutes(route_report: dict[str, Any] | None) -> int:
+    if not isinstance(route_report, dict):
+        return DEFAULT_BUFFER_MINUTES
+    try:
+        travel_minutes = int(route_report.get("duration_minutes") or 0)
+    except Exception:
+        travel_minutes = 0
+    return max(DEFAULT_BUFFER_MINUTES, travel_minutes)
+
+
+def _normalize_location_name(value: str) -> str:
+    cleaned = " ".join(part for part in value.replace("_", " ").split() if part).strip()
+    return cleaned or "Local area"
 
 
 def _clamp_minutes(value: int, minimum: int, maximum: int) -> int:
@@ -432,6 +666,112 @@ def _infer_flexible(segment: str) -> bool:
     return True
 
 
+def _extract_place_phrase(segment: str) -> str:
+    import re
+
+    text = _clean_text(segment, 200)
+    patterns = [
+        r"\bfrom\s+(.+?)\s+\b(?:to|until|through)\b",
+        r"\bto\s+([A-Za-z0-9][A-Za-z0-9 ,'&-]{1,80})",
+        r"\bat\s+([A-Za-z0-9][A-Za-z0-9 ,'&-]{1,80})",
+        r"\bin\s+([A-Za-z0-9][A-Za-z0-9 ,'&-]{1,80})",
+        r"\b(?:visit|meet at|meet in|head to|go to)\s+([A-Za-z0-9][A-Za-z0-9 ,'&-]{1,80})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            candidate = _clean_text(match.group(1), 120)
+            if candidate:
+                return candidate.strip(" .")
+    return ""
+
+
+def _route_summary_for_block(
+    block: dict[str, Any],
+    *,
+    previous_block: dict[str, Any] | None,
+    context: dict[str, Any],
+    read_context: ReadContextService | None,
+    run_id: str,
+) -> dict[str, Any] | None:
+    origin = _clean_text(block.get("origin"), 120)
+    destination = _clean_text(block.get("destination"), 120)
+    location = _clean_text(block.get("location"), 120)
+
+    if not origin:
+        if previous_block:
+            origin = _clean_text(previous_block.get("destination") or previous_block.get("location") or previous_block.get("title"), 120)
+        if not origin:
+            origin = location or "Local area"
+    if not destination:
+        destination = location or _clean_text(block.get("title"), 120) or "Destination"
+
+    if not read_context:
+        return MockRouteTool.estimate_route(origin=origin, destination=destination)
+
+    return read_context.route_summary(
+        origin=origin or "Local area",
+        destination=destination or "Destination",
+        context=context,
+        run_id=run_id,
+    )
+
+
+def _enrich_blocks_with_read_context(
+    blocks: list[dict[str, Any]],
+    *,
+    context: dict[str, Any],
+    read_context: ReadContextService | None,
+    run_id: str,
+) -> None:
+    if not blocks:
+        return
+
+    for index, block in enumerate(blocks):
+        segment = _clean_text(block.get("segment"), 240)
+        inferred_place = _extract_place_phrase(segment)
+        if inferred_place and not _clean_text(block.get("destination"), 120):
+            block["destination"] = inferred_place
+
+        normalized_location = _normalize_location_name(_clean_text(block.get("location"), 120) or "local area")
+        block["location"] = normalized_location
+
+        if read_context:
+            location_report = read_context.normalize_place(
+                query=normalized_location,
+                focus=None,
+                context=context,
+                run_id=run_id,
+            )
+            block["location_report"] = location_report
+            if inferred_place:
+                destination_report = read_context.normalize_place(
+                    query=inferred_place,
+                    focus=None,
+                    context=context,
+                    run_id=run_id,
+                )
+                block["destination_report"] = destination_report
+
+        previous_block = blocks[index - 1] if index > 0 else None
+        route_report = _route_summary_for_block(
+            block,
+            previous_block=previous_block,
+            context=context,
+            read_context=read_context,
+            run_id=run_id,
+        )
+        if route_report:
+            block["travel_minutes"] = _travel_buffer_minutes(route_report)
+            block["buffer_minutes"] = max(_block_buffer_minutes(block), _travel_buffer_minutes(route_report))
+            block["route_report"] = route_report
+            route_summary = _clean_text(route_report.get("summary") or "", 240)
+            if route_summary:
+                notes = list(block.get("notes") or [])
+                notes.append(route_summary)
+                block["notes"] = list(dict.fromkeys(notes))
+
+
 def _infer_window_from_text(
     segment: str,
     context: dict[str, Any],
@@ -589,7 +929,7 @@ def _build_decomposition_blocks(state: AgentState, context: dict[str, Any]) -> l
             "travel_minutes": 0,
             "location": "local area",
             "origin": "",
-            "destination": _infer_activity_title(segment),
+            "destination": _extract_place_phrase(segment) or _infer_activity_title(segment),
             "weather_sensitive": _infer_weather_sensitive(segment),
             "flexible": flexible,
             "fixed_time": fixed_time,
@@ -622,11 +962,49 @@ def _build_decomposition_blocks(state: AgentState, context: dict[str, Any]) -> l
 def _build_task_queue_from_blocks(blocks: list[dict[str, Any]]) -> list[TaskItem]:
     task_queue: list[TaskItem] = []
     for block in blocks:
+        if block.get("location_report"):
+            task_queue.append(
+                {
+                    "id": f"place-location-{block['id']}",
+                    "tool": "mcp_read",
+                    "capability": "place",
+                    "action": "normalize_place",
+                    "date": _clean_text(block.get("date"), 20),
+                    "location": _clean_text(block.get("location"), 120),
+                    "description": f"Normalize location context for {block.get('title', 'planned item')}",
+                }
+            )
+        if block.get("destination_report"):
+            task_queue.append(
+                {
+                    "id": f"place-destination-{block['id']}",
+                    "tool": "mcp_read",
+                    "capability": "place",
+                    "action": "normalize_place",
+                    "date": _clean_text(block.get("date"), 20),
+                    "location": _clean_text(block.get("destination"), 120),
+                    "description": f"Normalize destination context for {block.get('title', 'planned item')}",
+                }
+            )
+        if block.get("route_report"):
+            task_queue.append(
+                {
+                    "id": f"route-{block['id']}",
+                    "tool": "mcp_read",
+                    "capability": "route",
+                    "action": "estimate_route",
+                    "date": _clean_text(block.get("date"), 20),
+                    "origin": _clean_text((block.get("route_report") or {}).get("origin", {}).get("name") if isinstance(block.get("route_report"), dict) else block.get("origin"), 120),
+                    "destination": _clean_text((block.get("route_report") or {}).get("destination", {}).get("name") if isinstance(block.get("route_report"), dict) else block.get("destination"), 120),
+                    "description": f"Estimate route context for {block.get('title', 'planned item')}",
+                }
+            )
         if block.get("weather_sensitive") or block.get("weather_goal"):
             task_queue.append(
                 {
                     "id": f"weather-{block['id']}",
-                    "tool": "weather_mock",
+                    "tool": "mcp_read",
+                    "capability": "weather",
                     "action": "forecast",
                     "date": _clean_text(block.get("date"), 20),
                     "location": _clean_text(block.get("location"), 120) or "local area",
@@ -766,12 +1144,27 @@ def _memory_conflicts_for_block(block: dict[str, Any], memory_preferences: dict[
     return conflicts
 
 
-def _weather_conflicts_for_block(block: dict[str, Any], context: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _weather_conflicts_for_block(
+    block: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    read_context: ReadContextService | None,
+    run_id: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if not block.get("weather_sensitive"):
         return [], {}
-    report = MockWeatherTool.forecast(
-        date=_clean_text(block.get("date"), 20),
-        location=_clean_text(block.get("location"), 120) or "local area",
+    report = (
+        read_context.weather_forecast(
+            date=_clean_text(block.get("date"), 20),
+            location=_clean_text(block.get("location"), 120) or "local area",
+            context=context,
+            run_id=run_id,
+        )
+        if read_context
+        else MockWeatherTool.forecast(
+            date=_clean_text(block.get("date"), 20),
+            location=_clean_text(block.get("location"), 120) or "local area",
+        )
     )
     condition = str(report.get("condition", "")).lower()
     if condition in GOOD_WEATHER_CONDITIONS:
@@ -863,6 +1256,8 @@ def _find_best_slot(
                     "end_time": _minutes_to_time(candidate_end),
                 },
                 context,
+                read_context=None,
+                run_id="",
             )
             if candidate_weather_issues:
                 continue
@@ -942,6 +1337,7 @@ def _build_system_prompt(context: dict[str, Any]) -> str:
     relative_day_hints = context.get("relativeDayHints") or []
     memory_summary = context.get("retrievedMemory") or {}
     memory_text = memory_summary.get("summary_text") or "none"
+    mcp_summary = context.get("mcp_summary_text") or "local-mock-only"
 
     return "\n".join(
         [
@@ -951,7 +1347,8 @@ def _build_system_prompt(context: dict[str, Any]) -> str:
             "Do not reveal your reasoning outside the <|think|> block.",
             "The JSON object must have these keys:",
             '{"status":"ready|needs_clarification","assistantMessage":"string","task_queue":[...],"schedule_draft":{...},"decomposition":{...}}',
-            "Use task_queue entries with tool names calendar_mock or weather_mock.",
+            "Use task_queue entries with local calendar writes only.",
+            "Read-only weather, route, and place helpers may be available through MCP-backed context.",
             "If the request includes multiple intents, break them into atomic scheduling blocks with explicit dates, windows, durations, priorities, and dependencies.",
             "When the user request is incomplete, set status to needs_clarification and keep task_queue empty.",
             f"Calendar window: {context.get('calendarStartDate')} to {context.get('calendarEndDate')}",
@@ -959,6 +1356,7 @@ def _build_system_prompt(context: dict[str, Any]) -> str:
             f"Hours: {context.get('dayStartHour')}:00-{context.get('dayEndHour')}:00",
             f"Timezone: {context.get('timezone')}",
             f"Stable user context from prior runs: {memory_text}",
+            f"Live read context: {mcp_summary}",
             f"Existing events snapshot: {existing_events}",
             f"Relative day hints: {relative_day_hints}",
             "Use this memory only as additive context. Never let it override explicit instructions in the current request.",
@@ -1184,6 +1582,8 @@ def parse_node(state: AgentState, context: dict[str, Any], client: Any) -> Agent
 def decompose_node(state: AgentState, context: dict[str, Any], client: Any) -> AgentState:
     run_id = _clean_text(state.get("run_id"), 128)
     blocks = _build_decomposition_blocks(state, context)
+    read_context = context.get("read_context") if isinstance(context.get("read_context"), ReadContextService) else None
+    _enrich_blocks_with_read_context(blocks, context=context, read_context=read_context, run_id=run_id)
     task_queue = _build_task_queue_from_blocks(blocks)
     draft = deepcopy(state.get("schedule_draft") or {})
     draft.update(
@@ -1229,12 +1629,19 @@ def validate_node(state: AgentState, context: dict[str, Any], client: Any) -> Ag
     draft = deepcopy(state.get("schedule_draft") or {})
     blocks = list(draft.get("blocks") or [])
     memory_preferences = _extract_memory_preferences(context.get("retrievedMemory") or {})
+    read_context = context.get("read_context") if isinstance(context.get("read_context"), ReadContextService) else None
     calendar_checks: list[dict[str, Any]] = []
     weather_rows: list[dict[str, Any]] = []
+    route_rows: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
 
     for block in blocks:
-        weather_issues, weather_report = _weather_conflicts_for_block(block, context)
+        weather_issues, weather_report = _weather_conflicts_for_block(
+            block,
+            context,
+            read_context=read_context,
+            run_id=run_id,
+        )
         if weather_report:
             weather_rows.append(weather_report)
         if weather_issues:
@@ -1247,6 +1654,23 @@ def validate_node(state: AgentState, context: dict[str, Any], client: Any) -> Ag
                 }
                 for issue in weather_issues
             )
+        route_report = block.get("route_report") if isinstance(block.get("route_report"), dict) else None
+        if route_report:
+            route_rows.append(route_report)
+            route_buffer = _travel_buffer_minutes(route_report)
+            block_buffer = _block_buffer_minutes(block)
+            if route_buffer > block_buffer:
+                issues.append(
+                    {
+                        "kind": "buffer",
+                        "code": "travel_buffer",
+                        "message": str(route_report.get("summary") or "Route time requires a larger buffer."),
+                        "task_id": f"route-{block.get('id')}",
+                        "block_id": block.get("id"),
+                        "priority": block.get("priority", 0),
+                        "route": route_report,
+                    }
+                )
         check_result = MockCalendarTool.check_availability(
             date=_clean_text(block.get("date"), 20),
             start_time=_clean_text(block.get("start_time"), 5),
@@ -1312,12 +1736,13 @@ def validate_node(state: AgentState, context: dict[str, Any], client: Any) -> Ag
             if isinstance(prev, dict):
                 prev_end = _time_to_minutes(str(prev.get("end_time") or "")) or 0
                 block_start = _time_to_minutes(str(block.get("start_time") or "")) or 0
-                if block_start < prev_end + DEFAULT_BUFFER_MINUTES:
+                buffer_minutes = _block_buffer_minutes(block)
+                if block_start < prev_end + buffer_minutes:
                     issues.append(
                         {
                             "kind": "buffer",
                             "code": "missing_buffer",
-                            "message": f"{block.get('title', 'Next item')} needs {DEFAULT_BUFFER_MINUTES} minutes of buffer after {prev.get('title', 'the prior item')}.",
+                            "message": f"{block.get('title', 'Next item')} needs {buffer_minutes} minutes of buffer after {prev.get('title', 'the prior item')}.",
                             "task_id": f"calendar-write-{block.get('id')}",
                             "block_id": block.get("id"),
                             "priority": block.get("priority", 0),
@@ -1342,10 +1767,28 @@ def validate_node(state: AgentState, context: dict[str, Any], client: Any) -> Ag
                 context,
                 "tool_result_summary",
                 {
-                    "tool": "weather_mock",
+                    "tool": "mcp_read",
+                    "capability": "weather",
                     "action": "forecast",
                     "date": weather_report.get("date"),
+                    "source": weather_report.get("source"),
                     "summary": weather_report.get("summary"),
+                    "result": weather_report,
+                },
+                run_id=run_id,
+            )
+        if route_report:
+            _log_event(
+                context,
+                "tool_result_summary",
+                {
+                    "tool": "mcp_read",
+                    "capability": "route",
+                    "action": "estimate_route",
+                    "date": _clean_text(block.get("date"), 20),
+                    "source": route_report.get("source"),
+                    "summary": route_report.get("summary"),
+                    "result": route_report,
                 },
                 run_id=run_id,
             )
@@ -1368,10 +1811,12 @@ def validate_node(state: AgentState, context: dict[str, Any], client: Any) -> Ag
         "memory_preferences": memory_preferences,
         "calendar_checks": calendar_checks,
         "weather": weather_rows,
+        "routes": route_rows,
     }
 
     draft["calendar_checks"] = calendar_checks
     draft["weather"] = weather_rows
+    draft["routes"] = route_rows
     draft["validation"] = validation_report
     draft["notes"] = list(draft.get("notes") or [])
     draft["status"] = "needs_clarification" if has_unavoidable_conflict else "ready"
@@ -1478,7 +1923,8 @@ def replan_node(state: AgentState, context: dict[str, Any], client: Any) -> Agen
             prev = blocks[index - 1]
             if block.get("date") == prev.get("date"):
                 prev_end = _time_to_minutes(str(prev.get("end_time") or "")) or 0
-                desired_start = prev_end + DEFAULT_BUFFER_MINUTES
+                buffer_minutes = _block_buffer_minutes(block)
+                desired_start = prev_end + buffer_minutes
                 current_start = _time_to_minutes(str(block.get("start_time") or "")) or 0
                 if current_start < desired_start:
                     duration = max(30, int(block.get("duration_minutes") or 60))
@@ -1534,6 +1980,7 @@ def replan_node(state: AgentState, context: dict[str, Any], client: Any) -> Agen
         "memory_preferences": memory_preferences,
         "calendar_checks": [],
         "weather": [],
+        "routes": list(draft.get("routes") or []),
     }
     next_state["latest_resolution_path"] = list(next_state.get("latest_resolution_path") or []) + ["replan"]
 
@@ -1884,172 +2331,193 @@ def run_planner_graph(
     model: str,
     timeout_seconds: float,
     data_root: str = "./data",
+    mcp_registry: MCPRegistry | None = None,
 ) -> AgentState:
     calendar_id = _normalize_calendar_id(payload)
     paths = build_planner_paths(data_root, calendar_id)
     paths.checkpoints_dir.mkdir(parents=True, exist_ok=True)
     paths.sessions_dir.mkdir(parents=True, exist_ok=True)
     paths.exports_dir.mkdir(parents=True, exist_ok=True)
+    registry: MCPRegistry | None = None
+    owned_registry = mcp_registry is None
+    try:
+        registry = mcp_registry or build_mcp_registry(data_root=data_root)
+        read_context = ReadContextService(registry)
 
-    normalized_messages = _normalize_messages(payload.get("messages"))
-    session_id = calendar_id
-    event_logger = SessionEventLogger(paths.session_log_path, calendar_id, session_id)
-    run_index = event_logger.count_events("planner_request_received") + 1
-    run_id = f"{calendar_id}-run-{run_index:04d}"
-    prior_events = read_recent_session_events(paths.session_log_path, limit=8)
-    recent_context = tail_context_from_events(prior_events, limit=8)
+        normalized_messages = _normalize_messages(payload.get("messages"))
+        session_id = calendar_id
+        event_logger = SessionEventLogger(paths.session_log_path, calendar_id, session_id)
+        run_index = event_logger.count_events("planner_request_received") + 1
+        run_id = f"{calendar_id}-run-{run_index:04d}"
+        prior_events = read_recent_session_events(paths.session_log_path, limit=8)
+        recent_context = tail_context_from_events(prior_events, limit=8)
 
-    context_payload = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-    calendar_window = {
-        "start": context_payload.get("calendarStartDate"),
-        "end": context_payload.get("calendarEndDate"),
-        "visible_days": context_payload.get("visibleDays"),
-        "day_start_hour": context_payload.get("dayStartHour"),
-        "day_end_hour": context_payload.get("dayEndHour"),
-        "timezone": context_payload.get("timezone"),
-    }
+        context_payload = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+        calendar_window = {
+            "start": context_payload.get("calendarStartDate"),
+            "end": context_payload.get("calendarEndDate"),
+            "visible_days": context_payload.get("visibleDays"),
+            "day_start_hour": context_payload.get("dayStartHour"),
+            "day_end_hour": context_payload.get("dayEndHour"),
+            "timezone": context_payload.get("timezone"),
+        }
 
-    event_logger.append(
-        "planner_request_received",
-        {
-            "run_index": run_index,
-            "run_id": run_id,
-            "calendar_window": calendar_window,
-            "message_count": len(normalized_messages),
-            "latest_user_message": _clean_text(_latest_user_message(normalized_messages), 240),
-            "messages": _compact_message_batch(normalized_messages),
-        },
-        run_id=run_id,
-    )
-    event_logger.append(
-        "normalized_user_message_batch",
-        {
-            "run_index": run_index,
-            "messages": _compact_message_batch(normalized_messages),
-        },
-        run_id=run_id,
-    )
-
-    latest_user_message = sanitize_query_text(_latest_user_message(normalized_messages))
-
-    memory_store = LongTermMemoryStore(paths.data_root / "chromadb", ollama_url=ollama_url)
-    retrieved_memory = memory_store.query(
-        calendar_id=calendar_id,
-        query_text=latest_user_message,
-        recent_context=recent_context,
-    )
-    event_logger.append(
-        "retrieved_memory_summary",
-        {
-            "run_index": run_index,
-            "retrieved_memory": retrieved_memory,
-            "summary_text": retrieved_memory.get("summary_text", ""),
-        },
-        run_id=run_id,
-    )
-
-    client = OllamaClient(base_url=ollama_url, model=model, timeout_seconds=timeout_seconds)
-    checkpoint_store = SQLitePlannerCheckpointStore(paths.checkpoint_db_path)
-    context = {
-        "calendar_id": calendar_id,
-        "session_id": session_id,
-        "run_id": run_id,
-        "event_logger": event_logger,
-        "checkpoint_db_path": str(paths.checkpoint_db_path),
-        "event_log_path": str(paths.session_log_path),
-        "retrievedMemory": retrieved_memory,
-        "calendarStartDate": context_payload.get("calendarStartDate"),
-        "calendarEndDate": context_payload.get("calendarEndDate"),
-        "visibleDays": context_payload.get("visibleDays"),
-        "dayStartHour": context_payload.get("dayStartHour"),
-        "dayEndHour": context_payload.get("dayEndHour"),
-        "timezone": context_payload.get("timezone"),
-        "existingEvents": context_payload.get("existingEvents") or [],
-        "relativeDayHints": context_payload.get("relativeDayHints") or [],
-        "replanAttemptLimit": DEFAULT_REPLAN_LIMIT,
-    }
-
-    state: AgentState = {
-        "calendar_id": calendar_id,
-        "session_id": session_id,
-        "run_id": run_id,
-        "event_log_path": str(paths.session_log_path),
-        "retrieved_memory": retrieved_memory,
-        "distilled_facts": [],
-        "messages": normalized_messages,
-        "task_queue": [],
-        "decomposition": {},
-        "validation_report": {},
-        "conflict_history": [],
-        "replan_attempts": 0,
-        "latest_resolution_path": [],
-        "clarification_options": [],
-        "schedule_draft": {
-            "status": "needs_clarification",
-            "assistantMessage": "Need a little more detail.",
-            "tasks": [],
-            "events": [],
-            "calendar_checks": [],
-            "weather": [],
-            "notes": [],
-            "blocks": [],
-            "validation": {},
-            "clarification_options": [],
-            "resolution_path": [],
-        },
-    }
-
-    runner = build_graph_runner(
-        context,
-        client,
-        checkpoint_store=checkpoint_store,
-        thread_id=calendar_id,
-    )
-    final_state = runner.invoke(state)
-
-    response = final_state.get("response") or {
-        "status": "needs_clarification",
-        "assistantMessage": "Need a little more detail.",
-        "events": [],
-        "task_queue": [],
-        "schedule_draft": final_state.get("schedule_draft", {}),
-    }
-    final_state["response"] = response
-
-    checkpoint_store.save(
-        calendar_id=calendar_id,
-        run_id=run_id,
-        step_name="final",
-        state=deepcopy(final_state),
-        created_at=utc_now_iso(),
-    )
-
-    if response.get("status") == "ready":
-        distillation = distill_session_log(
-            session_log_path=str(paths.session_log_path),
-            calendar_id=calendar_id,
-            session_id=session_id,
-        )
-        if distillation.facts:
-            memory_store.upsert_facts(distillation.facts)
-        final_state["distilled_facts"] = [
-            {
-                "category": fact.category,
-                "normalized_value": fact.normalized_value,
-                "confidence": fact.confidence,
-                "document_id": fact.document_id,
-            }
-            for fact in distillation.facts
-        ]
         event_logger.append(
-            "distillation_results",
+            "planner_request_received",
             {
                 "run_index": run_index,
-                "summary": distillation.summary,
-                "upserted_facts": final_state["distilled_facts"],
-                "skipped": distillation.skipped,
+                "run_id": run_id,
+                "calendar_window": calendar_window,
+                "message_count": len(normalized_messages),
+                "latest_user_message": _clean_text(_latest_user_message(normalized_messages), 240),
+                "messages": _compact_message_batch(normalized_messages),
+            },
+            run_id=run_id,
+        )
+        event_logger.append(
+            "normalized_user_message_batch",
+            {
+                "run_index": run_index,
+                "messages": _compact_message_batch(normalized_messages),
+            },
+            run_id=run_id,
+        )
+        event_logger.append(
+            "mcp_discovery_summary",
+            {
+                "run_index": run_index,
+                "summary": registry.discovery_summary(),
+                "summary_text": read_context.summary_text(),
             },
             run_id=run_id,
         )
 
-    return final_state
+        latest_user_message = sanitize_query_text(_latest_user_message(normalized_messages))
+
+        memory_store = LongTermMemoryStore(paths.data_root / "chromadb", ollama_url=ollama_url)
+        retrieved_memory = memory_store.query(
+            calendar_id=calendar_id,
+            query_text=latest_user_message,
+            recent_context=recent_context,
+        )
+        event_logger.append(
+            "retrieved_memory_summary",
+            {
+                "run_index": run_index,
+                "retrieved_memory": retrieved_memory,
+                "summary_text": retrieved_memory.get("summary_text", ""),
+            },
+            run_id=run_id,
+        )
+
+        client = OllamaClient(base_url=ollama_url, model=model, timeout_seconds=timeout_seconds)
+        checkpoint_store = SQLitePlannerCheckpointStore(paths.checkpoint_db_path)
+        context = {
+            "calendar_id": calendar_id,
+            "session_id": session_id,
+            "run_id": run_id,
+            "event_logger": event_logger,
+            "checkpoint_db_path": str(paths.checkpoint_db_path),
+            "event_log_path": str(paths.session_log_path),
+            "retrievedMemory": retrieved_memory,
+            "calendarStartDate": context_payload.get("calendarStartDate"),
+            "calendarEndDate": context_payload.get("calendarEndDate"),
+            "visibleDays": context_payload.get("visibleDays"),
+            "dayStartHour": context_payload.get("dayStartHour"),
+            "dayEndHour": context_payload.get("dayEndHour"),
+            "timezone": context_payload.get("timezone"),
+            "existingEvents": context_payload.get("existingEvents") or [],
+            "relativeDayHints": context_payload.get("relativeDayHints") or [],
+            "replanAttemptLimit": DEFAULT_REPLAN_LIMIT,
+            "read_context": read_context,
+            "mcp_registry": registry,
+            "mcp_summary_text": read_context.summary_text(),
+        }
+
+        state: AgentState = {
+            "calendar_id": calendar_id,
+            "session_id": session_id,
+            "run_id": run_id,
+            "event_log_path": str(paths.session_log_path),
+            "retrieved_memory": retrieved_memory,
+            "distilled_facts": [],
+            "messages": normalized_messages,
+            "task_queue": [],
+            "decomposition": {},
+            "validation_report": {},
+            "conflict_history": [],
+            "replan_attempts": 0,
+            "latest_resolution_path": [],
+            "clarification_options": [],
+            "schedule_draft": {
+                "status": "needs_clarification",
+                "assistantMessage": "Need a little more detail.",
+                "tasks": [],
+                "events": [],
+                "calendar_checks": [],
+                "weather": [],
+                "notes": [],
+                "blocks": [],
+                "validation": {},
+                "clarification_options": [],
+                "resolution_path": [],
+            },
+        }
+
+        runner = build_graph_runner(
+            context,
+            client,
+            checkpoint_store=checkpoint_store,
+            thread_id=calendar_id,
+        )
+        final_state = runner.invoke(state)
+
+        response = final_state.get("response") or {
+            "status": "needs_clarification",
+            "assistantMessage": "Need a little more detail.",
+            "events": [],
+            "task_queue": [],
+            "schedule_draft": final_state.get("schedule_draft", {}),
+        }
+        final_state["response"] = response
+
+        checkpoint_store.save(
+            calendar_id=calendar_id,
+            run_id=run_id,
+            step_name="final",
+            state=deepcopy(final_state),
+            created_at=utc_now_iso(),
+        )
+
+        if response.get("status") == "ready":
+            distillation = distill_session_log(
+                session_log_path=str(paths.session_log_path),
+                calendar_id=calendar_id,
+                session_id=session_id,
+            )
+            if distillation.facts:
+                memory_store.upsert_facts(distillation.facts)
+            final_state["distilled_facts"] = [
+                {
+                    "category": fact.category,
+                    "normalized_value": fact.normalized_value,
+                    "confidence": fact.confidence,
+                    "document_id": fact.document_id,
+                }
+                for fact in distillation.facts
+            ]
+            event_logger.append(
+                "distillation_results",
+                {
+                    "run_index": run_index,
+                    "summary": distillation.summary,
+                    "upserted_facts": final_state["distilled_facts"],
+                    "skipped": distillation.skipped,
+                },
+                run_id=run_id,
+            )
+
+        return final_state
+    finally:
+        if owned_registry and registry is not None:
+            registry.close()
