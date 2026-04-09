@@ -37,7 +37,7 @@ class CalendarCheckResult:
 
 
 class MockCalendarTool:
-    """Deterministic local calendar stub."""
+    """Deterministic local calendar helper."""
 
     seed_events = [
         {"date": "2026-04-09", "start_time": "09:00", "end_time": "10:00", "title": "Morning hold"},
@@ -116,7 +116,7 @@ class MockCalendarTool:
 
 
 class MockWeatherTool:
-    """Deterministic local weather stub."""
+    """Deterministic local weather helper."""
 
     conditions = ["sunny", "partly cloudy", "cloudy", "windy", "light rain"]
 
