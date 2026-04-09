@@ -100,23 +100,6 @@ The planner service is intentionally built like an engineering system, not a pro
 - `planner_service/distillation.py` and `planner_service/export.py` turn confirmed interactions into training data and memory facts
 - `planner_service/service.py` exposes the local HTTP API and proxies requests from the Node server
 
-## Screenshots
-
-Replace the placeholder files in `docs/screenshots/` with real captures using the same filenames:
-- `docs/screenshots/dashboard.png`
-- `docs/screenshots/dayview.png`
-- `docs/screenshots/rowview.png`
-- `docs/screenshots/gridview.png`
-- `docs/screenshots/calendar-manager.png`
-- `docs/screenshots/event-edit.png`
-- `docs/screenshots/route-mode-toggle.png`
-- `docs/screenshots/simple-route.png`
-- `docs/screenshots/precise-route.png`
-- `docs/screenshots/ai-planner.png`
-- `docs/screenshots/delete-calendar.png`
-- `docs/screenshots/day-sidebar.png`
-- `docs/screenshots/theme-toggle.png`
-
 ## Quick Start
 
 ### Requirements
