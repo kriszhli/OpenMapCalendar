@@ -669,6 +669,7 @@ function App() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            calendarId: requestCalendarId,
             messages: requestMessages.map((message) => ({ role: message.role, text: message.text })),
             context: {
               calendarStartDate: calendarStartLocal,

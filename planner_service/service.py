@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .export import export_training_rows
 from .graph import run_planner_graph
 
 
@@ -70,6 +71,7 @@ class PlannerHandler(BaseHTTPRequestHandler):
                 ollama_url=server.ollama_url,
                 model=server.model,
                 timeout_seconds=server.timeout_seconds,
+                data_root=server.data_root,
             )
             response = state.get("response") or {
                 "status": "needs_clarification",
@@ -102,11 +104,13 @@ class PlannerHTTPServer(ThreadingHTTPServer):
         ollama_url: str,
         model: str,
         timeout_seconds: float,
+        data_root: str,
     ) -> None:
         super().__init__(address, handler)
         self.ollama_url = ollama_url
         self.model = model
         self.timeout_seconds = timeout_seconds
+        self.data_root = data_root
 
 
 def _default_smoke_payload(prompt: str) -> dict[str, Any]:
@@ -127,13 +131,23 @@ def _default_smoke_payload(prompt: str) -> dict[str, Any]:
     }
 
 
-def run_smoke(prompt: str, *, ollama_url: str, model: str, timeout_seconds: float, verbose: bool = True) -> int:
+def run_smoke(
+    prompt: str,
+    *,
+    ollama_url: str,
+    model: str,
+    timeout_seconds: float,
+    data_root: str,
+    verbose: bool = True,
+) -> int:
     payload = _default_smoke_payload(prompt)
+    payload["calendarId"] = "smoke-calendar"
     state = run_planner_graph(
         payload,
         ollama_url=ollama_url,
         model=model,
         timeout_seconds=timeout_seconds,
+        data_root=data_root,
     )
 
     if verbose:
@@ -155,6 +169,7 @@ def run_server(
     ollama_url: str,
     model: str,
     timeout_seconds: float,
+    data_root: str,
 ) -> int:
     server = PlannerHTTPServer(
         (host, port),
@@ -162,6 +177,7 @@ def run_server(
         ollama_url=ollama_url,
         model=model,
         timeout_seconds=timeout_seconds,
+        data_root=data_root,
     )
     print(f"Planner service running at http://{host}:{port}")
     print(f"Ollama: {ollama_url}")
@@ -182,6 +198,9 @@ def build_parser() -> ArgumentParser:
     parser.add_argument("--ollama-url", default=DEFAULT_OLLAMA_URL)
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument("--data-root", default="./data", help="Local planner data root")
+    parser.add_argument("--export", action="store_true", help="Export session logs to JSONL")
+    parser.add_argument("--calendar-id", default=None, help="Limit export to one calendar")
     parser.add_argument("--serve", action="store_true", help="Run the HTTP service")
     parser.add_argument("--smoke", metavar="PROMPT", help="Run a one-off smoke test and print graph state")
     return parser
@@ -197,7 +216,13 @@ def main(argv: list[str] | None = None) -> int:
             ollama_url=args.ollama_url,
             model=args.model,
             timeout_seconds=args.timeout_seconds,
+            data_root=args.data_root,
         )
+
+    if args.export:
+        batch = export_training_rows(data_root=args.data_root, calendar_id=args.calendar_id)
+        print(f"Exported {batch.row_count} training rows to {batch.path}")
+        return 0
 
     if args.serve or not args.smoke:
         return run_server(
@@ -206,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
             ollama_url=args.ollama_url,
             model=args.model,
             timeout_seconds=args.timeout_seconds,
+            data_root=args.data_root,
         )
 
     return 0
-
