@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from pathlib import Path
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ from planner_service.export import export_training_rows
 from planner_service.graph import run_planner_graph
 from planner_service.memory import LongTermMemoryStore, MemoryFact
 from planner_service.persistence import SessionEventLogger, load_jsonl
+from planner_service.tools import MockWeatherTool
 
 
 def _base_context() -> dict[str, object]:
@@ -23,6 +25,21 @@ def _base_context() -> dict[str, object]:
         "existingEvents": [],
         "relativeDayHints": [],
     }
+
+
+def _context_with_dates(
+    start_date: str,
+    end_date: str | None = None,
+    *,
+    visible_days: int = 5,
+    existing_events: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    context = _base_context()
+    context["calendarStartDate"] = start_date
+    context["calendarEndDate"] = end_date or start_date
+    context["visibleDays"] = visible_days
+    context["existingEvents"] = existing_events or []
+    return context
 
 
 class PlannerServiceTests(unittest.TestCase):
@@ -53,6 +70,167 @@ class PlannerServiceTests(unittest.TestCase):
             self.assertTrue(checkpoint_path.exists())
             self.assertTrue(session_log_path.exists())
             self.assertGreater(len(load_jsonl(session_log_path)), 0)
+
+    def test_multi_intent_decomposition_creates_atomic_blocks(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planner-decompose-") as tmp:
+            payload = {
+                "calendarId": "cal-decompose",
+                "messages": [
+                    {"role": "user", "text": "On the second day, schedule a museum visit and dinner."}
+                ],
+                "context": _base_context(),
+            }
+            state = run_planner_graph(
+                payload,
+                ollama_url="http://127.0.0.1:11434",
+                model="gemma4:e2b",
+                timeout_seconds=1.0,
+                data_root=tmp,
+            )
+
+            decomposition = state.get("decomposition") or {}
+            blocks = decomposition.get("blocks") if isinstance(decomposition, dict) else []
+            self.assertIsInstance(blocks, list)
+            self.assertGreaterEqual(len(blocks), 2)
+            titles = " ".join(str(block.get("title", "")) for block in blocks if isinstance(block, dict))
+            self.assertIn("Museum", titles)
+            self.assertIn("Dinner", titles)
+            if len(blocks) > 1 and isinstance(blocks[0], dict) and isinstance(blocks[1], dict):
+                self.assertEqual(blocks[1].get("depends_on"), [blocks[0].get("id")])
+            self.assertGreaterEqual(len(state.get("task_queue") or []), 4)
+
+    def test_weather_conflict_triggers_reranking(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planner-weather-") as tmp:
+            base = date(2026, 4, 8)
+            bad_start = None
+            for offset in range(0, 10):
+                candidate = (base + timedelta(days=offset)).isoformat()
+                forecast = MockWeatherTool.forecast(date=candidate, location="local area")
+                if forecast.get("condition") not in {"sunny", "partly cloudy"}:
+                    later_good = any(
+                        MockWeatherTool.forecast(
+                            date=(base + timedelta(days=offset + step)).isoformat(),
+                            location="local area",
+                        ).get("condition") in {"sunny", "partly cloudy"}
+                        for step in range(1, 5)
+                    )
+                    if later_good:
+                        bad_start = candidate
+                        break
+
+            self.assertIsNotNone(bad_start)
+            assert bad_start is not None
+            payload = {
+                "calendarId": "cal-weather",
+                "messages": [{"role": "user", "text": "Plan an outdoor walk."}],
+                "context": _context_with_dates(
+                    bad_start,
+                    (date.fromisoformat(bad_start) + timedelta(days=4)).isoformat(),
+                    visible_days=5,
+                ),
+            }
+            state = run_planner_graph(
+                payload,
+                ollama_url="http://127.0.0.1:11434",
+                model="gemma4:e2b",
+                timeout_seconds=1.0,
+                data_root=tmp,
+            )
+
+            response = state.get("response") or {}
+            self.assertEqual(response.get("status"), "ready")
+            self.assertGreaterEqual(int(state.get("replan_attempts") or 0), 1)
+            events = response.get("events") or []
+            self.assertTrue(events)
+            self.assertNotEqual(events[0].get("date"), bad_start)
+
+    def test_memory_preference_conflict_is_rebalanced(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planner-memory-replan-") as tmp:
+            store = LongTermMemoryStore(Path(tmp) / "chromadb")
+            store.upsert_facts(
+                [
+                    MemoryFact(
+                        calendar_id="cal-memory-replan",
+                        category="lunch_avoidance",
+                        normalized_value="avoid lunch window",
+                        confidence=0.94,
+                        summary="User avoids lunch meetings.",
+                        source_session_ids=["seed-session"],
+                        source_run_ids=["seed-run"],
+                        created_at="2026-04-08T00:00:00Z",
+                        updated_at="2026-04-08T00:00:00Z",
+                    )
+                ]
+            )
+
+            payload = {
+                "calendarId": "cal-memory-replan",
+                "messages": [{"role": "user", "text": "Schedule a lunch check-in sometime today."}],
+                "context": _base_context(),
+            }
+            state = run_planner_graph(
+                payload,
+                ollama_url="http://127.0.0.1:11434",
+                model="gemma4:e2b",
+                timeout_seconds=1.0,
+                data_root=tmp,
+            )
+
+            response = state.get("response") or {}
+            self.assertEqual(response.get("status"), "ready")
+            self.assertGreaterEqual(int(state.get("replan_attempts") or 0), 1)
+            blocks = (state.get("schedule_draft") or {}).get("blocks") or []
+            self.assertTrue(blocks)
+            first_block = blocks[0]
+            self.assertNotEqual(first_block.get("start_time"), "12:00")
+            self.assertNotEqual(first_block.get("end_time"), "13:00")
+
+    def test_replan_loop_limit_falls_back_to_clarification(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planner-loop-") as tmp:
+            blocked_events: list[dict[str, object]] = []
+            for hour in range(7, 22):
+                blocked_events.append(
+                    {
+                        "date": "2026-04-09",
+                        "startTime": f"{hour:02d}:00",
+                        "endTime": f"{hour:02d}:30",
+                        "title": f"Blocked {hour:02d}:00",
+                    }
+                )
+                blocked_events.append(
+                    {
+                        "date": "2026-04-09",
+                        "startTime": f"{hour:02d}:30",
+                        "endTime": f"{hour + 1:02d}:00",
+                        "title": f"Blocked {hour:02d}:30",
+                    }
+                )
+
+            payload = {
+                "calendarId": "cal-loop-limit",
+                "messages": [{"role": "user", "text": "Schedule a lunch check-in."}],
+                "context": _context_with_dates(
+                    "2026-04-09",
+                    "2026-04-09",
+                    visible_days=1,
+                    existing_events=blocked_events,
+                ),
+            }
+            state = run_planner_graph(
+                payload,
+                ollama_url="http://127.0.0.1:11434",
+                model="gemma4:e2b",
+                timeout_seconds=1.0,
+                data_root=tmp,
+            )
+
+            response = state.get("response") or {}
+            draft = response.get("schedule_draft") or {}
+            self.assertEqual(response.get("status"), "needs_clarification")
+            self.assertLessEqual(int(state.get("replan_attempts") or 0), 2)
+            options = draft.get("clarification_options") or []
+            self.assertEqual(len(options), 2)
+            self.assertIn("Choose one", str(response.get("assistantMessage") or ""))
 
     def test_memory_retrieval_is_injected_before_planning(self) -> None:
         with tempfile.TemporaryDirectory(prefix="planner-memory-") as tmp:
