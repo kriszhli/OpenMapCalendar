@@ -30,6 +30,7 @@ def _group_runs(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "request": None,
                 "memory": None,
                 "final": None,
+                "confirmation": None,
                 "distillation": [],
                 "tool_summaries": [],
                 "order": len(run_order),
@@ -44,6 +45,8 @@ def _group_runs(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             entry["memory"] = event
         elif event.get("event") == "final_response":
             entry["final"] = event
+        elif event.get("event") == "plan_confirmation_received":
+            entry["confirmation"] = event
         elif event.get("event") == "distillation_results":
             entry["distillation"].append(event)
         elif event.get("event") == "tool_result_summary":
@@ -54,27 +57,44 @@ def _group_runs(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         entry = grouped[run_id]
         request = entry["request"]
         final = entry["final"]
-        if not request or not final:
+        confirmation = entry["confirmation"]
+        if not request or not final or not confirmation:
+            continue
+
+        confirmation_payload = confirmation.get("payload") if isinstance(confirmation.get("payload"), dict) else {}
+        if not confirmation_payload.get("user_confirmed"):
             continue
 
         request_payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
         final_payload = final.get("payload") if isinstance(final.get("payload"), dict) else {}
         memory_payload = entry["memory"].get("payload") if isinstance(entry["memory"], dict) else {}
+        confirmation_payload = confirmation.get("payload") if isinstance(confirmation.get("payload"), dict) else {}
+
+        schedule_draft = final_payload.get("schedule_draft") if isinstance(final_payload.get("schedule_draft"), dict) else {}
+        if not schedule_draft and isinstance(confirmation_payload.get("schedule_draft"), dict):
+            schedule_draft = confirmation_payload.get("schedule_draft") or {}
 
         rows.append(
             {
                 "calendar_id": entry["calendar_id"],
                 "run_id": run_id,
                 "run_index": request_payload.get("run_index", entry["order"] + 1),
-                "input": {
+                "user_input": {
                     "calendar_window": request_payload.get("calendar_window", {}),
                     "messages": request_payload.get("messages", []),
-                    "retrieved_memory": memory_payload.get("retrieved_memory", {}),
+                },
+                "retrieved_memory": memory_payload.get("retrieved_memory", {}),
+                "schedule_draft": schedule_draft,
+                "confirmed_schedule": confirmation_payload.get("confirmed_schedule", {}),
+                "correction_diff": confirmation_payload.get("correction_diff", {}),
+                "approval": {
+                    "user_confirmed": confirmation_payload.get("user_confirmed", False),
+                    "confirmed_at": confirmation_payload.get("confirmed_at", ""),
                 },
                 "output": {
                     "status": final_payload.get("status"),
                     "assistant_message": final_payload.get("assistant_message"),
-                    "events": final_payload.get("events", []),
+                    "events": confirmation_payload.get("confirmed_schedule", {}).get("events", []),
                     "tool_actions": [event.get("payload") for event in entry["tool_summaries"]],
                 },
             }

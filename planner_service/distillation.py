@@ -89,6 +89,8 @@ def _add_candidate(
     session_id: str,
     run_id: str | None,
     evidence: str,
+    forced: bool = False,
+    priority: int = 50,
 ) -> None:
     key = (category, normalized_value)
     entry = candidates.setdefault(
@@ -102,6 +104,8 @@ def _add_candidate(
             "session_ids": set(),
             "run_ids": set(),
             "evidence": [],
+            "forced": False,
+            "priority": 50,
         },
     )
     entry["confidence"] = max(float(entry["confidence"]), confidence)
@@ -109,6 +113,8 @@ def _add_candidate(
     if run_id:
         entry["run_ids"].add(run_id)
     entry["evidence"].append(evidence)
+    entry["forced"] = bool(entry.get("forced")) or bool(forced)
+    entry["priority"] = max(int(entry.get("priority") or 50), int(priority))
 
 
 def _build_fact(
@@ -120,6 +126,8 @@ def _build_fact(
     *,
     session_ids: set[str],
     run_ids: set[str],
+    forced: bool = False,
+    priority: int = 50,
 ) -> MemoryFact:
     now = _now_iso()
     return MemoryFact(
@@ -132,6 +140,8 @@ def _build_fact(
         source_run_ids=sorted(run_ids),
         created_at=now,
         updated_at=now,
+        forced=forced,
+        priority=priority,
     )
 
 
@@ -258,6 +268,53 @@ def distill_session_log(
             candidates=candidates,
         )
 
+    for event in events:
+        if event.get("event") != "plan_confirmation_received":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict) or not payload.get("user_confirmed"):
+            continue
+        confirmation_run_id = str(event.get("runId") or active_run_id or "")
+        preference_updates = payload.get("preference_updates")
+        if isinstance(preference_updates, list):
+            for update in preference_updates:
+                if not isinstance(update, dict):
+                    continue
+                category = str(update.get("category") or "manual_correction").strip() or "manual_correction"
+                normalized_value = str(update.get("normalized_value") or update.get("value") or "manual correction").strip() or "manual correction"
+                summary = str(update.get("summary") or update.get("reason") or normalized_value).strip() or normalized_value
+                _add_candidate(
+                    candidates,
+                    calendar_id=calendar_id,
+                    category=category,
+                    normalized_value=normalized_value,
+                    summary=summary,
+                    confidence=float(update.get("confidence") or 1.0),
+                    session_id=session_id,
+                    run_id=confirmation_run_id or None,
+                    evidence="manual correction",
+                    forced=bool(update.get("forced", True)),
+                    priority=int(update.get("priority") or 100),
+                )
+
+        correction_diff = payload.get("correction_diff")
+        if isinstance(correction_diff, dict) and correction_diff:
+            diff_summary = str(correction_diff.get("summary") or correction_diff.get("kind") or "manual correction").strip()
+            if diff_summary:
+                _add_candidate(
+                    candidates,
+                    calendar_id=calendar_id,
+                    category="manual_correction",
+                    normalized_value=diff_summary[:120],
+                    summary=diff_summary,
+                    confidence=0.85,
+                    session_id=session_id,
+                    run_id=confirmation_run_id or None,
+                    evidence="manual correction diff",
+                    forced=False,
+                    priority=75,
+                )
+
     facts: list[MemoryFact] = []
     skipped: list[dict[str, Any]] = []
     for key in sorted(candidates):
@@ -266,18 +323,23 @@ def distill_session_log(
         source_runs = entry["run_ids"]
         evidence_count = len(entry["evidence"])
         confidence = float(entry["confidence"])
-        if evidence_count >= 2:
+        if bool(entry.get("forced")):
+            confidence = max(confidence, 0.99)
+        elif evidence_count >= 2:
             confidence = max(confidence, 0.85)
         if confidence < 0.75:
-            skipped.append(
-                {
-                    "category": entry["category"],
-                    "normalized_value": entry["normalized_value"],
-                    "reason": "below_confidence_threshold",
-                    "confidence": round(confidence, 3),
-                }
-            )
-            continue
+            if bool(entry.get("forced")):
+                confidence = 0.99
+            else:
+                skipped.append(
+                    {
+                        "category": entry["category"],
+                        "normalized_value": entry["normalized_value"],
+                        "reason": "below_confidence_threshold",
+                        "confidence": round(confidence, 3),
+                    }
+                )
+                continue
         facts.append(
             _build_fact(
                 calendar_id,
@@ -287,6 +349,8 @@ def distill_session_log(
                 confidence,
                 session_ids=source_sessions,
                 run_ids=source_runs,
+                forced=bool(entry.get("forced")),
+                priority=int(entry.get("priority") or 50),
             )
         )
 

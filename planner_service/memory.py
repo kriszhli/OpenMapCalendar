@@ -153,6 +153,8 @@ class MemoryFact:
     source_run_ids: list[str]
     created_at: str
     updated_at: str
+    forced: bool = False
+    priority: int = 50
 
     @property
     def document_id(self) -> str:
@@ -197,6 +199,8 @@ class LongTermMemoryStore:
                     "summary": document,
                     "distance": distances[index] if index < len(distances) else None,
                     "source_session_ids": metadata.get("source_session_ids", ""),
+                    "forced": bool(metadata.get("forced", False)),
+                    "priority": int(metadata.get("priority", 50) or 50),
                 }
             )
 
@@ -223,6 +227,8 @@ class LongTermMemoryStore:
                 "source_run_ids": ",".join(fact.source_run_ids),
                 "created_at": fact.created_at,
                 "updated_at": fact.updated_at,
+                "forced": bool(fact.forced),
+                "priority": int(fact.priority),
             }
             for fact in facts
         ]

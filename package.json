@@ -11,7 +11,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "start": "node server.js",
-    "host": "npm run build && node server.js"
+    "host": "npm run build && node server.js",
+    "planner:health": "python3 -m planner_service --health-check"
   },
   "dependencies": {
     "body-parser": "^2.2.2",

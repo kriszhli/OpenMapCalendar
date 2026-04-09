@@ -7,6 +7,7 @@ import './MapView.css';
 
 interface MapViewProps {
     events: Record<number, TimeBlock[]>;
+    previewEvents?: Record<number, TimeBlock[]>;
     hoveredEventId: string | null;
     onHoverEvent: (id: string | null) => void;
     preciseZoomEnabled?: boolean;
@@ -54,13 +55,14 @@ async function fetchRoute(
             );
         }
     } catch {
-        // Silently fail — no route drawn
+        // No route available.
     }
     return null;
 }
 
 const MapView: React.FC<MapViewProps> = ({
     events,
+    previewEvents,
     hoveredEventId,
     onHoverEvent,
     preciseZoomEnabled = false,
@@ -84,6 +86,18 @@ const MapView: React.FC<MapViewProps> = ({
             .filter((group) => group.events.length > 0)
             .sort((a, b) => a.dayIndex - b.dayIndex);
     }, [events]);
+
+    const previewDayLocatedEvents = useMemo(() => {
+        return Object.entries(previewEvents || {})
+            .map(([dayIndex, dayEvents]) => ({
+                dayIndex: Number(dayIndex),
+                events: [...dayEvents]
+                    .filter((ev) => ev.location || ev.destination)
+                    .sort((a, b) => a.startMinutes - b.startMinutes),
+            }))
+            .filter((group) => group.events.length > 0)
+            .sort((a, b) => a.dayIndex - b.dayIndex);
+    }, [previewEvents]);
 
     // Initialize map
     useEffect(() => {
@@ -226,24 +240,25 @@ const MapView: React.FC<MapViewProps> = ({
             eventId: string,
             timeText: string,
             titleText: string,
+            isPreview: boolean,
         ): { marker: L.CircleMarker; glow: L.CircleMarker } => {
             const glow = L.circleMarker(latlng, {
-                radius: 20,
+                radius: isPreview ? 16 : 20,
                 color,
                 fillColor: color,
                 fillOpacity: 0,
                 opacity: 0,
                 weight: 2,
-                className: 'map-pin-highlight',
+                className: isPreview ? 'map-pin-highlight map-pin-preview' : 'map-pin-highlight',
             }).addTo(map);
 
             const marker = L.circleMarker(latlng, {
-                radius: 8,
+                radius: isPreview ? 6 : 8,
                 color: '#fff',
                 fillColor: color,
-                fillOpacity: 1,
+                fillOpacity: isPreview ? 0.45 : 1,
                 weight: 1.5,
-                opacity: 0.5,
+                opacity: isPreview ? 0.3 : 0.5,
             }).addTo(map);
 
             const clusterKey = `${Math.round(latlng.lat / LABEL_CLUSTER_STEP)}:${Math.round(latlng.lng / LABEL_CLUSTER_STEP)}`;
@@ -264,16 +279,18 @@ const MapView: React.FC<MapViewProps> = ({
                 }
             );
 
-            marker.on('mouseover', () => {
-                onHoverEvent(eventId);
-                marker.setStyle({ fillOpacity: 1, radius: 11, opacity: 1 });
-                glow.setStyle({ opacity: 0.6, fillOpacity: 0.3 });
-            });
-            marker.on('mouseout', () => {
-                onHoverEvent(null);
-                marker.setStyle({ fillOpacity: 1, radius: 8, opacity: 0.5 });
-                glow.setStyle({ opacity: 0, fillOpacity: 0 });
-            });
+            if (!isPreview) {
+                marker.on('mouseover', () => {
+                    onHoverEvent(eventId);
+                    marker.setStyle({ fillOpacity: 1, radius: 11, opacity: 1 });
+                    glow.setStyle({ opacity: 0.6, fillOpacity: 0.3 });
+                });
+                marker.on('mouseout', () => {
+                    onHoverEvent(null);
+                    marker.setStyle({ fillOpacity: 1, radius: 8, opacity: 0.5 });
+                    glow.setStyle({ opacity: 0, fillOpacity: 0 });
+                });
+            }
             return { marker, glow };
         };
 
@@ -282,8 +299,11 @@ const MapView: React.FC<MapViewProps> = ({
             color: string,
             mode: 'simple' | 'precise',
             startLatLng: L.LatLng,
-            endLatLng: L.LatLng
+            endLatLng: L.LatLng,
+            isPreview: boolean,
         ) => {
+            const routeOpacity = isPreview ? 0.2 : 0.5;
+            const routeWeight = isPreview ? 2.5 : 3;
             if (mode === 'precise') {
                 const cache = ev.preciseRouteCache;
                 const hasValidCache =
@@ -295,21 +315,23 @@ const MapView: React.FC<MapViewProps> = ({
                 if (hasValidCache) {
                     const polyline = L.polyline(cache.coords, {
                         color,
-                        weight: 3,
-                        opacity: 0.5,
+                        weight: routeWeight,
+                        opacity: routeOpacity,
                         smoothFactor: 1,
                         className: 'map-route-line',
                     }).addTo(map);
 
-                    polyline.on('mouseover', () => {
-                        onHoverEvent(ev.id);
-                        polyline.setStyle({ weight: 4, opacity: 0.7 });
-                        polyline.bringToFront();
-                    });
-                    polyline.on('mouseout', () => {
-                        onHoverEvent(null);
-                        polyline.setStyle({ weight: 3, opacity: 0.5 });
-                    });
+                    if (!isPreview) {
+                        polyline.on('mouseover', () => {
+                            onHoverEvent(ev.id);
+                            polyline.setStyle({ weight: 4, opacity: 0.7 });
+                            polyline.bringToFront();
+                        });
+                        polyline.on('mouseout', () => {
+                            onHoverEvent(null);
+                            polyline.setStyle({ weight: 3, opacity: 0.5 });
+                        });
+                    }
 
                     routesRef.current.set(ev.id, polyline);
                     return;
@@ -322,21 +344,23 @@ const MapView: React.FC<MapViewProps> = ({
                     if (isCancelled || !coords || !mapRef.current) return;
                     const polyline = L.polyline(coords, {
                         color,
-                        weight: 3,
-                        opacity: 0.5,
+                        weight: routeWeight,
+                        opacity: routeOpacity,
                         smoothFactor: 1,
                         className: 'map-route-line',
                     }).addTo(mapRef.current);
 
-                    polyline.on('mouseover', () => {
-                        onHoverEvent(ev.id);
-                        polyline.setStyle({ weight: 4, opacity: 0.7 });
-                        polyline.bringToFront();
-                    });
-                    polyline.on('mouseout', () => {
-                        onHoverEvent(null);
-                        polyline.setStyle({ weight: 3, opacity: 0.5 });
-                    });
+                    if (!isPreview) {
+                        polyline.on('mouseover', () => {
+                            onHoverEvent(ev.id);
+                            polyline.setStyle({ weight: 4, opacity: 0.7 });
+                            polyline.bringToFront();
+                        });
+                        polyline.on('mouseout', () => {
+                            onHoverEvent(null);
+                            polyline.setStyle({ weight: 3, opacity: 0.5 });
+                        });
+                    }
 
                     routesRef.current.set(ev.id, polyline);
 
@@ -371,27 +395,29 @@ const MapView: React.FC<MapViewProps> = ({
 
             const polyline = L.polyline(curvePoints, {
                 color,
-                weight: 3,
-                opacity: 0.5,
+                weight: routeWeight,
+                opacity: routeOpacity,
                 smoothFactor: 1,
                 dashArray: '8, 6',
                 className: 'map-route-line',
             }).addTo(map);
 
-            polyline.on('mouseover', () => {
-                onHoverEvent(ev.id);
-                polyline.setStyle({ weight: 4, opacity: 0.7 });
-                polyline.bringToFront();
-            });
-            polyline.on('mouseout', () => {
-                onHoverEvent(null);
-                polyline.setStyle({ weight: 3, opacity: 0.5 });
-            });
+            if (!isPreview) {
+                polyline.on('mouseover', () => {
+                    onHoverEvent(ev.id);
+                    polyline.setStyle({ weight: 4, opacity: 0.7 });
+                    polyline.bringToFront();
+                });
+                polyline.on('mouseout', () => {
+                    onHoverEvent(null);
+                    polyline.setStyle({ weight: 3, opacity: 0.5 });
+                });
+            }
 
             routesRef.current.set(ev.id, polyline);
         };
 
-        dayLocatedEvents.forEach(({ events: dayEvents }) => {
+        [...dayLocatedEvents.map((group) => ({ ...group, preview: false })), ...previewDayLocatedEvents.map((group) => ({ ...group, preview: true }))].forEach(({ events: dayEvents, preview }) => {
             dayEvents.forEach((ev, index) => {
                 const color = ev.color || '#5B7FBF';
                 const eventMarkers: L.CircleMarker[] = [];
@@ -408,7 +434,8 @@ const MapView: React.FC<MapViewProps> = ({
                         color,
                         ev.id,
                         startTimeLabel,
-                        eventTitle
+                        eventTitle,
+                        !!preview
                     );
                     eventMarkers.push(marker);
                     eventGlows.push(glow);
@@ -422,7 +449,8 @@ const MapView: React.FC<MapViewProps> = ({
                         color,
                         ev.id,
                         endTimeLabel,
-                        eventTitle
+                        eventTitle,
+                        !!preview
                     );
                     eventMarkers.push(marker);
                     eventGlows.push(glow);
@@ -437,7 +465,7 @@ const MapView: React.FC<MapViewProps> = ({
                 if (ev.location && ev.destination) {
                     const startLatLng = L.latLng(ev.location.lat, ev.location.lng);
                     const endLatLng = L.latLng(ev.destination.lat, ev.destination.lng);
-                    drawRoute(ev, color, mode, startLatLng, endLatLng);
+                    drawRoute(ev, color, mode, startLatLng, endLatLng, !!preview);
                     return;
                 }
 
@@ -453,7 +481,7 @@ const MapView: React.FC<MapViewProps> = ({
 
                 const startLatLng = L.latLng(previousEndpoint.lat, previousEndpoint.lng);
                 const endLatLng = L.latLng(currentEndpoint.lat, currentEndpoint.lng);
-                drawRoute(ev, color, mode, startLatLng, endLatLng);
+                drawRoute(ev, color, mode, startLatLng, endLatLng, !!preview);
             });
         });
 
@@ -469,9 +497,9 @@ const MapView: React.FC<MapViewProps> = ({
         return () => {
             isCancelled = true;
         };
-    }, [dayLocatedEvents, onHoverEvent, onPreciseRouteCacheChange]);
+    }, [dayLocatedEvents, previewDayLocatedEvents, onHoverEvent, onPreciseRouteCacheChange]);
 
-    const hasLocations = dayLocatedEvents.length > 0;
+    const hasLocations = dayLocatedEvents.length > 0 || previewDayLocatedEvents.length > 0;
 
     return (
         <div className="map-section">
