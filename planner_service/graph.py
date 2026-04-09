@@ -5,7 +5,6 @@ from datetime import date as date_cls, timedelta
 import sqlite3
 from typing import Any, Callable, Literal, NotRequired, TypedDict
 
-from .distillation import distill_session_log
 from .mcp import MCPRegistry, build_mcp_registry
 from .memory import LongTermMemoryStore, sanitize_query_text
 from .paths import build_planner_paths
@@ -82,6 +81,7 @@ class AgentState(TypedDict, total=False):
     latest_resolution_path: list[str]
     clarification_options: list[dict[str, Any]]
     raw_model_output: str
+    raw_model_output_full: str
     planner_payload: dict[str, Any]
     response: dict[str, Any]
 
@@ -1342,7 +1342,7 @@ def _build_system_prompt(context: dict[str, Any]) -> str:
     return "\n".join(
         [
             "<|think|>",
-            "You are the local planning core for a calendar assistant.",
+            "You are the local planning core for a calendar planning agent.",
             "Think privately, then emit one valid JSON object only.",
             "Do not reveal your reasoning outside the <|think|> block.",
             "The JSON object must have these keys:",
@@ -1405,17 +1405,17 @@ def _build_fallback_plan(state: AgentState, context: dict[str, Any]) -> dict[str
         start_time = "14:00"
 
     end_time = "12:00" if start_time == "11:00" else ("11:00" if start_time == "10:00" else "15:00")
-    assistant = "I need a little more detail to schedule this safely."
+    clarification_message = "I need a little more detail to schedule this safely."
     task_queue: list[TaskItem] = []
 
     if "?" in user_text and not day_hint:
         return {
             "status": "needs_clarification",
-            "assistantMessage": assistant,
+            "assistantMessage": clarification_message,
             "task_queue": [],
             "schedule_draft": {
                 "status": "needs_clarification",
-                "assistantMessage": assistant,
+                "assistantMessage": clarification_message,
                 "tasks": [],
                 "events": [],
                 "calendar_checks": [],
@@ -1490,6 +1490,7 @@ def planner_node(state: AgentState, context: dict[str, Any], client: Any) -> Age
     )
     sanitized_output = _strip_think_blocks(response_text)
     next_state: AgentState = deepcopy(state)
+    next_state["raw_model_output_full"] = response_text
     next_state["raw_model_output"] = sanitized_output
     _log_event(
         context,
@@ -2032,23 +2033,12 @@ def execute_node(state: AgentState, context: dict[str, Any], client: Any) -> Age
             "end_time": _clean_text(block.get("end_time"), 5),
             "origin": _clean_text(block.get("origin"), 120),
             "destination": _clean_text(block.get("destination"), 120),
-            "color": "#5B7FBF",
+            "color": _clean_text(block.get("color"), 12) or "#5B7FBF",
+            "source_block_id": block.get("id"),
+            "pending": True,
         }
-        created = MockCalendarTool.write_event(event)
-        events.append(created)
-        notes.append(f"event:{created['id']}")
-        _log_event(
-            context,
-            "tool_result_summary",
-            {
-                "tool": "calendar_mock",
-                "action": "write_event",
-                "status": "written",
-                "event_id": created["id"],
-                "title": created["title"],
-            },
-            run_id=run_id,
-        )
+        events.append(event)
+        notes.append(f"draft-event:{block.get('id')}")
 
     draft["events"] = events
     draft["notes"] = notes
@@ -2069,7 +2059,11 @@ def finalize_node(state: AgentState, context: dict[str, Any], client: Any) -> Ag
         "events": draft.get("events", []),
         "task_queue": state.get("task_queue", []),
         "schedule_draft": draft,
+        "run_id": run_id,
+        "calendar_id": state.get("calendar_id", ""),
     }
+    if context.get("show_reasoning"):
+        response["debugReasoning"] = _clean_text(state.get("raw_model_output_full"), 4000)
     _log_event(
         context,
         "state_transition",
@@ -2077,6 +2071,17 @@ def finalize_node(state: AgentState, context: dict[str, Any], client: Any) -> Ag
             "state": "completed",
             "status": response["status"],
             "event_count": len(response["events"]),
+        },
+        run_id=run_id,
+    )
+    _log_event(
+        context,
+        "plan_proposed",
+        {
+            "status": response["status"],
+            "assistant_message": _clean_text(response["assistantMessage"], 400),
+            "event_count": len(response["events"]),
+            "task_count": len(response["task_queue"]),
         },
         run_id=run_id,
     )
@@ -2432,6 +2437,7 @@ def run_planner_graph(
             "read_context": read_context,
             "mcp_registry": registry,
             "mcp_summary_text": read_context.summary_text(),
+            "show_reasoning": bool(payload.get("showReasoning") or context_payload.get("showReasoning")),
         }
 
         state: AgentState = {
@@ -2488,34 +2494,6 @@ def run_planner_graph(
             state=deepcopy(final_state),
             created_at=utc_now_iso(),
         )
-
-        if response.get("status") == "ready":
-            distillation = distill_session_log(
-                session_log_path=str(paths.session_log_path),
-                calendar_id=calendar_id,
-                session_id=session_id,
-            )
-            if distillation.facts:
-                memory_store.upsert_facts(distillation.facts)
-            final_state["distilled_facts"] = [
-                {
-                    "category": fact.category,
-                    "normalized_value": fact.normalized_value,
-                    "confidence": fact.confidence,
-                    "document_id": fact.document_id,
-                }
-                for fact in distillation.facts
-            ]
-            event_logger.append(
-                "distillation_results",
-                {
-                    "run_index": run_index,
-                    "summary": distillation.summary,
-                    "upserted_facts": final_state["distilled_facts"],
-                    "skipped": distillation.skipped,
-                },
-                run_id=run_id,
-            )
 
         return final_state
     finally:

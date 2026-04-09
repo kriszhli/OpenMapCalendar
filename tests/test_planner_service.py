@@ -11,6 +11,7 @@ from planner_service.export import export_training_rows
 from planner_service.graph import run_planner_graph
 from planner_service.memory import LongTermMemoryStore, MemoryFact
 from planner_service.persistence import SessionEventLogger, load_jsonl
+from planner_service.service import _append_confirmation_record, run_health_check
 from planner_service.tools import MockWeatherTool
 
 
@@ -64,6 +65,9 @@ class PlannerServiceTests(unittest.TestCase):
             self.assertIn("events", response)
             self.assertIn("task_queue", response)
             self.assertIn("schedule_draft", response)
+            self.assertIn("run_id", response)
+            if response.get("status") == "ready" and response.get("events"):
+                self.assertTrue(response["events"][0].get("pending"))
 
             checkpoint_path = Path(tmp) / "checkpoints" / "langgraph.sqlite"
             session_log_path = Path(tmp) / "sessions" / "cal-smoke.jsonl"
@@ -338,7 +342,7 @@ class PlannerServiceTests(unittest.TestCase):
             doc_ids = [fact.document_id for fact in result.facts]
             self.assertEqual(doc_ids, [fact.document_id for fact in result.facts])
 
-    def test_export_writes_terminal_outcomes_only(self) -> None:
+    def test_export_writes_confirmed_outcomes_only(self) -> None:
         with tempfile.TemporaryDirectory(prefix="planner-export-") as tmp:
             session_path = Path(tmp) / "sessions" / "cal-export.jsonl"
             logger = SessionEventLogger(session_path, "cal-export", "cal-export")
@@ -387,6 +391,25 @@ class PlannerServiceTests(unittest.TestCase):
                 run_id=run_id,
             )
             logger.append(
+                "plan_confirmation_received",
+                {
+                    "user_confirmed": True,
+                    "confirmed_schedule": {
+                        "status": "ready",
+                        "assistantMessage": "Drafted a plan.",
+                        "events": [{"date": "2026-04-08", "startTime": "10:00", "endTime": "11:00"}],
+                    },
+                    "schedule_draft": {"status": "ready"},
+                    "correction_diff": {
+                        "summary": "1 edited event",
+                        "event_diffs": [],
+                        "preference_updates": [],
+                    },
+                    "preference_updates": [],
+                },
+                run_id=run_id,
+            )
+            logger.append(
                 "distillation_results",
                 {"summary": {"fact_count": 1}, "upserted_facts": [{"category": "lunch_avoidance"}], "skipped": []},
                 run_id=run_id,
@@ -399,13 +422,159 @@ class PlannerServiceTests(unittest.TestCase):
 
             row = json.loads(exported_text[0])
             self.assertEqual(row["calendar_id"], "cal-export")
-            self.assertEqual(row["output"]["status"], "ready")
-            self.assertEqual(row["output"]["assistant_message"], "Drafted a plan.")
+            self.assertEqual(row["approval"]["user_confirmed"], True)
+            self.assertEqual(row["confirmed_schedule"]["status"], "ready")
+            self.assertEqual(row["schedule_draft"]["status"], "ready")
+            self.assertEqual(row["user_input"]["messages"][0]["content"], "Plan a museum visit before lunch.")
             self.assertEqual(len(row["output"]["tool_actions"]), 1)
-            self.assertEqual(row["input"]["messages"][0]["content"], "Plan a museum visit before lunch.")
 
             batch2 = export_training_rows(data_root=tmp, calendar_id="cal-export")
             self.assertEqual(batch.path.read_text(encoding="utf-8"), batch2.path.read_text(encoding="utf-8"))
+
+    def test_export_skips_unconfirmed_runs(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planner-export-unconfirmed-") as tmp:
+            session_path = Path(tmp) / "sessions" / "cal-export-unconfirmed.jsonl"
+            logger = SessionEventLogger(session_path, "cal-export-unconfirmed", "cal-export-unconfirmed")
+            run_id = "cal-export-unconfirmed-run-0001"
+
+            logger.append(
+                "planner_request_received",
+                {
+                    "run_index": 1,
+                    "run_id": run_id,
+                    "calendar_window": {
+                        "start": "2026-04-08",
+                        "end": "2026-04-12",
+                        "visible_days": 5,
+                        "day_start_hour": 7,
+                        "day_end_hour": 22,
+                        "timezone": "America/Chicago",
+                    },
+                    "messages": [{"role": "user", "content": "Plan a museum visit before lunch."}],
+                },
+                run_id=run_id,
+            )
+            logger.append(
+                "final_response",
+                {
+                    "status": "ready",
+                    "assistant_message": "Drafted a plan.",
+                    "event_count": 1,
+                    "task_count": 2,
+                },
+                run_id=run_id,
+            )
+            logger.append(
+                "plan_confirmation_received",
+                {
+                    "user_confirmed": False,
+                    "confirmed_schedule": {
+                        "status": "ready",
+                        "assistantMessage": "Drafted a plan.",
+                        "events": [{"date": "2026-04-08", "startTime": "10:00", "endTime": "11:00"}],
+                    },
+                    "schedule_draft": {"status": "ready"},
+                    "correction_diff": {
+                        "summary": "1 edited event",
+                        "event_diffs": [],
+                        "preference_updates": [],
+                    },
+                    "preference_updates": [],
+                },
+                run_id=run_id,
+            )
+
+            batch = export_training_rows(data_root=tmp, calendar_id="cal-export-unconfirmed")
+            self.assertEqual(batch.row_count, 0)
+            self.assertEqual(batch.path.read_text(encoding="utf-8"), "")
+
+    def test_confirmation_requires_user_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planner-confirmation-") as tmp:
+            payload = {
+                "calendar_id": "cal-confirmation",
+                "run_id": "run-confirmation-0001",
+                "user_confirmed": False,
+                "confirmed_schedule": {"status": "ready", "events": []},
+                "schedule_draft": {"status": "ready"},
+                "correction_diff": {},
+                "preference_updates": [],
+            }
+
+            with self.assertRaises(ValueError):
+                _append_confirmation_record(data_root=tmp, payload=payload)
+
+    def test_manual_correction_distills_forced_memory(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planner-correction-") as tmp:
+            session_path = Path(tmp) / "sessions" / "cal-correction.jsonl"
+            logger = SessionEventLogger(session_path, "cal-correction", "cal-correction")
+            run_id = "cal-correction-run-0001"
+
+            logger.append(
+                "plan_confirmation_received",
+                {
+                    "user_confirmed": True,
+                    "confirmed_schedule": {
+                        "status": "ready",
+                        "assistantMessage": "Committed.",
+                        "events": [{"date": "2026-04-08", "startTime": "09:00", "endTime": "10:00"}],
+                    },
+                    "schedule_draft": {"status": "ready"},
+                    "correction_diff": {
+                        "summary": "User moved the plan away from lunch.",
+                        "event_diffs": [
+                            {
+                                "index": 0,
+                                "changedFields": ["startTime", "endTime"],
+                                "before": {"title": "Lunch check-in", "date": "2026-04-08", "startTime": "12:00", "endTime": "13:00"},
+                                "after": {"title": "Lunch check-in", "date": "2026-04-08", "startTime": "09:00", "endTime": "10:00"},
+                            }
+                        ],
+                        "preference_updates": [
+                            {
+                                "category": "lunch_avoidance",
+                                "normalized_value": "avoid lunch window",
+                                "summary": "User moved the plan away from lunch.",
+                                "confidence": 1.0,
+                                "forced": True,
+                                "priority": 100,
+                            }
+                        ],
+                    },
+                    "preference_updates": [
+                        {
+                            "category": "lunch_avoidance",
+                            "normalized_value": "avoid lunch window",
+                            "summary": "User moved the plan away from lunch.",
+                            "confidence": 1.0,
+                            "forced": True,
+                            "priority": 100,
+                        }
+                    ],
+                },
+                run_id=run_id,
+            )
+
+            result = distill_session_log(
+                session_log_path=str(session_path),
+                calendar_id="cal-correction",
+                session_id="cal-correction",
+            )
+            self.assertTrue(result.facts)
+            facts_by_category = {fact.category: fact for fact in result.facts}
+            self.assertIn("lunch_avoidance", facts_by_category)
+            self.assertTrue(facts_by_category["lunch_avoidance"].forced)
+            self.assertGreaterEqual(facts_by_category["lunch_avoidance"].priority, 100)
+
+    def test_health_check_runs_locally(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planner-health-") as tmp:
+            exit_code = run_health_check(
+                data_root=tmp,
+                ollama_url="http://127.0.0.1:11434",
+                model="gemma4:e2b",
+                timeout_seconds=1.0,
+                calendar_id="cal-health",
+            )
+            self.assertEqual(exit_code, 0)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,12 @@ import DayGrid from './components/DayGrid';
 import DaySidebar from './components/DaySidebar';
 import MapView from './components/MapView';
 import CalendarManager from './components/CalendarManager';
-import AiPlannerChat, { type AiChatMessage } from './components/AiPlannerChat';
+import PlannerApprovalPanel, {
+  type AiChatMessage,
+  type AiPlanDraftEvent,
+  type ClarificationChoice,
+  type StagedAiPlan,
+} from './components/AiPlannerChat';
 import './App.css';
 
 interface CalendarState {
@@ -33,21 +38,24 @@ interface CalendarResponse {
   revision: number;
 }
 
-interface AiPlanEvent {
-  title: string;
-  description?: string;
-  date: string;
-  startTime: string;
-  endTime: string;
-  origin?: string;
-  destination?: string;
-  color?: string;
-}
+type AiPlanEvent = AiPlanDraftEvent;
 
 interface AiPlanResponse {
   status: 'ready' | 'needs_clarification';
   assistantMessage: string;
-  events: AiPlanEvent[];
+  events: AiPlanDraftEvent[];
+  schedule_draft?: {
+    status?: 'ready' | 'needs_clarification';
+    assistantMessage?: string;
+    events?: AiPlanDraftEvent[];
+    blocks?: Record<string, never>[];
+    clarification_options?: ClarificationChoice[];
+    debugReasoning?: string;
+  };
+  clarification_options?: ClarificationChoice[];
+  run_id?: string;
+  calendar_id?: string;
+  debugReasoning?: string;
   error?: string;
   detail?: string;
 }
@@ -87,6 +95,34 @@ interface RollbackSnapshot {
   dayViewIndex: number;
 }
 
+interface ProposalEventDiff {
+  index: number;
+  before: AiPlanEvent;
+  after: AiPlanEvent;
+  changedFields: string[];
+}
+
+interface ManualCorrectionDiff {
+  summary: string;
+  event_diffs: ProposalEventDiff[];
+  preference_updates: {
+    category: string;
+    normalized_value: string;
+    summary: string;
+    confidence: number;
+    forced: boolean;
+    priority: number;
+  }[];
+}
+
+interface StagedProposalState extends StagedAiPlan {
+  runId: string;
+  calendarId: string;
+  snapshot: RollbackSnapshot;
+  originalEvents: AiPlanEvent[];
+  showReasoning: boolean;
+}
+
 interface ApplyPlanResult {
   created: number;
   unresolvedPlaces: string[];
@@ -101,7 +137,7 @@ const DEFAULT_AI_MESSAGES: AiChatMessage[] = [
   {
     id: 'ai-welcome',
     role: 'assistant',
-    text: 'Tell me where and when you want to go, and I will create calendar events for you.',
+    text: 'Tell me what you want planned, and I will draft a proposal for review.',
   },
 ];
 
@@ -272,10 +308,6 @@ const cloneEvents = (source: Record<number, TimeBlock[]>): Record<number, TimeBl
 const hasTimeOverlap = (aStart: number, aEnd: number, bStart: number, bEnd: number): boolean =>
   aStart < bEnd && aEnd > bStart;
 
-const isClarificationLike = (text: string): boolean =>
-  /(?:exact|specific|which|what)\s+date/i.test(text) ||
-  /please\s+(?:provide|specify)/i.test(text);
-
 const serializeCalendarEventsForAi = (
   eventsByDay: Record<number, TimeBlock[]>,
   calendarStartDate: Date
@@ -307,6 +339,126 @@ const serializeCalendarEventsForAi = (
   }
 
   return rows;
+};
+
+const cloneAiPlanEvents = (events: AiPlanEvent[]): AiPlanEvent[] => events.map((event) => ({ ...event }));
+
+const normalizeDraftEvent = (event: Partial<AiPlanEvent>): AiPlanEvent => ({
+  title: event.title?.trim() || 'Untitled',
+  description: event.description?.trim() || '',
+  date: event.date?.trim() || '',
+  startTime: event.startTime?.trim() || '09:00',
+  endTime: event.endTime?.trim() || '10:00',
+  origin: event.origin?.trim() || '',
+  destination: event.destination?.trim() || '',
+  color: normalizeHexColor(event.color),
+});
+
+const buildPreferenceUpdatesFromDiff = (original: AiPlanEvent, edited: AiPlanEvent) => {
+  const updates: ManualCorrectionDiff['preference_updates'] = [];
+  const originalStart = parseTimeToMinutes(original.startTime);
+  const editedStart = parseTimeToMinutes(edited.startTime);
+  const originalEnd = parseTimeToMinutes(original.endTime);
+  const editedEnd = parseTimeToMinutes(edited.endTime);
+  const originalWindowOverlapsLunch =
+    originalStart !== null && originalEnd !== null && originalStart < 13 * 60 && originalEnd > 12 * 60;
+  const editedWindowOverlapsLunch =
+    editedStart !== null && editedEnd !== null && editedStart < 13 * 60 && editedEnd > 12 * 60;
+
+  if (originalWindowOverlapsLunch && !editedWindowOverlapsLunch) {
+    updates.push({
+      category: 'lunch_avoidance',
+      normalized_value: 'avoid lunch window',
+      summary: 'User moved the proposal away from lunch.',
+      confidence: 1,
+      forced: true,
+      priority: 100,
+    });
+  }
+
+  if (originalStart !== null && editedStart !== null) {
+    if (originalStart >= 12 * 60 && editedStart < 12 * 60) {
+      updates.push({
+        category: 'prefer_mornings',
+        normalized_value: 'prefer mornings',
+        summary: 'User moved the plan into the morning.',
+        confidence: 0.98,
+        forced: true,
+        priority: 100,
+      });
+    } else if (originalStart < 12 * 60 && editedStart >= 12 * 60) {
+      updates.push({
+        category: 'prefer_afternoons',
+        normalized_value: 'prefer afternoons',
+        summary: 'User moved the plan into the afternoon.',
+        confidence: 0.98,
+        forced: true,
+        priority: 100,
+      });
+    }
+  }
+
+  if (/focus|deep work|heads-down/i.test(`${original.title} ${edited.title}`)) {
+    updates.push({
+      category: 'focus_block',
+      normalized_value: 'protected focus block',
+      summary: 'User adjusted a focus block.',
+      confidence: 0.95,
+      forced: true,
+      priority: 95,
+    });
+  }
+
+  if (/commute|travel|route/i.test(`${original.title} ${edited.title} ${original.description} ${edited.description}`)) {
+    updates.push({
+      category: 'commute_sensitivity',
+      normalized_value: 'travel buffer',
+      summary: 'User corrected a travel buffer plan.',
+      confidence: 0.9,
+      forced: true,
+      priority: 95,
+    });
+  }
+
+  return updates;
+};
+
+const buildManualCorrectionDiff = (original: AiPlanEvent[], edited: AiPlanEvent[]): ManualCorrectionDiff => {
+  const event_diffs: ProposalEventDiff[] = [];
+  const preference_updates: ManualCorrectionDiff['preference_updates'] = [];
+  const count = Math.min(original.length, edited.length);
+
+  for (let index = 0; index < count; index += 1) {
+    const before = normalizeDraftEvent(original[index]);
+    const after = normalizeDraftEvent(edited[index]);
+    const changedFields = (['title', 'description', 'date', 'startTime', 'endTime', 'origin', 'destination', 'color'] as const)
+      .filter((field) => before[field] !== after[field]);
+
+    if (!changedFields.length) continue;
+
+    event_diffs.push({
+      index,
+      before,
+      after,
+      changedFields: [...changedFields],
+    });
+
+    preference_updates.push(...buildPreferenceUpdatesFromDiff(before, after));
+  }
+
+  const summary = event_diffs.length
+    ? `${event_diffs.length} edited event${event_diffs.length === 1 ? '' : 's'}`
+    : 'No user edits';
+
+  return {
+    summary,
+    event_diffs,
+    preference_updates: preference_updates.filter((item, index, array) =>
+      array.findIndex((candidate) =>
+        candidate.category === item.category && candidate.normalized_value === item.normalized_value
+      ) === index
+    ),
+  };
 };
 
 function parseCalendarResponse(raw: unknown): CalendarResponse {
@@ -394,6 +546,62 @@ async function geocodeLocationByName(
   }
 }
 
+const buildPreviewEvents = async (
+  plannedEvents: AiPlanEvent[],
+  calendarStartDate: Date
+): Promise<Record<number, TimeBlock[]>> => {
+  const nextEvents: Record<number, TimeBlock[]> = {};
+  const geocodeCache = new Map<string, Promise<LocationData | undefined>>();
+  const resolvePlace = async (place?: string): Promise<LocationData | undefined> => {
+    const key = place?.trim();
+    if (!key) return undefined;
+    if (!geocodeCache.has(key)) {
+      geocodeCache.set(key, geocodeLocationByName(key));
+    }
+    return geocodeCache.get(key) ?? undefined;
+  };
+
+  for (const [index, item] of plannedEvents.entries()) {
+    const date = parseIsoDateOnly(item.date);
+    const startMinutes = parseTimeToMinutes(item.startTime);
+    const endMinutes = parseTimeToMinutes(item.endTime);
+    if (!date || startMinutes === null || endMinutes === null) continue;
+
+    const dayIndex = diffInDays(date, toLocalDay(calendarStartDate));
+    const [location, destination] = await Promise.all([
+      resolvePlace(item.origin),
+      resolvePlace(item.destination),
+    ]);
+
+    const block: TimeBlock = {
+      id: `preview-${index}-${generateId()}`,
+      dayIndex,
+      startMinutes,
+      endMinutes,
+      color: normalizeHexColor(item.color) || PALETTE_COLORS[index % PALETTE_COLORS.length],
+      title: item.title?.trim() || 'Untitled',
+      description: item.description?.trim() || '',
+      location,
+      destination,
+      routeMode: 'simple',
+    };
+
+    nextEvents[dayIndex] = [...(nextEvents[dayIndex] || []), block].sort(
+      (a, b) => a.startMinutes - b.startMinutes
+    );
+  }
+
+  return nextEvents;
+};
+
+const clarificationChoiceToEvent = (choice: ClarificationChoice): AiPlanEvent => ({
+  title: choice.label || 'Selected option',
+  description: choice.description || '',
+  date: choice.date,
+  startTime: choice.start_time,
+  endTime: choice.end_time,
+});
+
 function App() {
   const [isLoaded, setIsLoaded] = useState(false);
   const [apiOnline, setApiOnline] = useState(false);
@@ -417,7 +625,10 @@ function App() {
   // AI state (isolated per calendar)
   const [aiMessagesByCalendar, setAiMessagesByCalendar] = useState<Record<string, AiChatMessage[]>>({});
   const [aiRollbackByCalendar, setAiRollbackByCalendar] = useState<Record<string, RollbackSnapshot | null>>({});
+  const [stagedPlanByCalendar, setStagedPlanByCalendar] = useState<Record<string, StagedProposalState | null>>({});
+  const [previewEventsByCalendar, setPreviewEventsByCalendar] = useState<Record<string, Record<number, TimeBlock[]> | null>>({});
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiCommitting, setAiCommitting] = useState(false);
   const currentCalendarIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -431,8 +642,18 @@ function App() {
 
   const canRollbackAiChanges = useMemo(() => {
     if (!currentCalendarId) return false;
-    return !!aiRollbackByCalendar[currentCalendarId];
-  }, [currentCalendarId, aiRollbackByCalendar]);
+    return !!aiRollbackByCalendar[currentCalendarId] || !!stagedPlanByCalendar[currentCalendarId];
+  }, [currentCalendarId, aiRollbackByCalendar, stagedPlanByCalendar]);
+
+  const currentStagedPlan = useMemo(() => {
+    if (!currentCalendarId) return null;
+    return stagedPlanByCalendar[currentCalendarId] ?? null;
+  }, [currentCalendarId, stagedPlanByCalendar]);
+
+  const currentPreviewEvents = useMemo(() => {
+    if (!currentCalendarId) return null;
+    return previewEventsByCalendar[currentCalendarId] ?? null;
+  }, [currentCalendarId, previewEventsByCalendar]);
 
   const applyCalendarState = useCallback((state: CalendarState) => {
     setNumDays(state.numDays);
@@ -484,6 +705,23 @@ function App() {
       delete next[calendarId];
       return next;
     });
+    setStagedPlanByCalendar((prev) => {
+      if (!(calendarId in prev)) return prev;
+      const next = { ...prev };
+      delete next[calendarId];
+      return next;
+    });
+    setPreviewEventsByCalendar((prev) => {
+      if (!(calendarId in prev)) return prev;
+      const next = { ...prev };
+      delete next[calendarId];
+      return next;
+    });
+  }, []);
+
+  const clearStagedProposal = useCallback((calendarId: string) => {
+    setStagedPlanByCalendar((prev) => ({ ...prev, [calendarId]: null }));
+    setPreviewEventsByCalendar((prev) => ({ ...prev, [calendarId]: null }));
   }, []);
 
   const applyPlannedEvents = useCallback(
@@ -670,6 +908,7 @@ function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             calendarId: requestCalendarId,
+            showReasoning: true,
             messages: requestMessages.map((message) => ({ role: message.role, text: message.text })),
             context: {
               calendarStartDate: calendarStartLocal,
@@ -693,45 +932,61 @@ function App() {
 
         const assistantMessage =
           payload.assistantMessage?.trim() ||
-          'Please provide a little more detail so I can schedule this accurately.';
+          'Please add a little more detail so I can build a safe proposal.';
 
         if (currentCalendarIdRef.current !== requestCalendarId) {
-          appendAiAssistantMessage(
-            requestCalendarId,
-            'You switched calendars before this request completed.',
-            'error'
-          );
+          appendAiAssistantMessage(requestCalendarId, 'You switched calendars before this request completed.', 'error');
           return;
         }
 
-        if (payload.status === 'ready' && Array.isArray(payload.events) && payload.events.length > 0) {
-          const result = await applyPlannedEvents(payload.events, snapshot);
-          if (result.created > 0) {
-            setAiRollbackByCalendar((prev) => ({ ...prev, [requestCalendarId]: snapshot }));
-          }
+        const responseEvents = Array.isArray(payload.events) ? payload.events : [];
+        const clarificationOptions =
+          (Array.isArray(payload.clarification_options) && payload.clarification_options) ||
+          (payload.schedule_draft && Array.isArray(payload.schedule_draft.clarification_options)
+            ? payload.schedule_draft.clarification_options
+            : []);
+        const reasoning = payload.debugReasoning || payload.schedule_draft?.debugReasoning || '';
 
-          const compactParts = [`Added ${result.created} event${result.created === 1 ? '' : 's'}.`];
-          if (result.skippedOverlap > 0) {
-            compactParts.push(`Skipped ${result.skippedOverlap} overlap${result.skippedOverlap === 1 ? '' : 's'}.`);
-          }
-          if (result.skippedInvalid > 0) {
-            compactParts.push(`Skipped ${result.skippedInvalid} invalid item${result.skippedInvalid === 1 ? '' : 's'}.`);
-          }
-          if (result.unresolvedPlaces.length > 0) {
-            compactParts.push('Some locations need manual selection.');
-          }
-
-          const prefix = !isClarificationLike(assistantMessage) ? assistantMessage : '';
-          const finalMessage = [prefix, compactParts.join(' ')].filter(Boolean).join(' ').trim();
-          appendAiAssistantMessage(requestCalendarId, finalMessage, result.created > 0 ? 'success' : 'error');
+        if (payload.status === 'ready') {
+          const staged: StagedProposalState = {
+            status: 'ready',
+            assistantMessage,
+            events: cloneAiPlanEvents(responseEvents),
+            clarificationOptions: [],
+            reasoning,
+            selectedClarificationOptionIndex: null,
+            isEditing: false,
+            runId: payload.run_id || '',
+            calendarId: requestCalendarId,
+            snapshot,
+            originalEvents: cloneAiPlanEvents(responseEvents),
+            showReasoning: false,
+          };
+          setStagedPlanByCalendar((prev) => ({ ...prev, [requestCalendarId]: staged }));
+          appendAiAssistantMessage(requestCalendarId, 'Proposal ready for approval.', 'success');
         } else {
+          const staged: StagedProposalState = {
+            status: 'needs_clarification',
+            assistantMessage,
+            events: [],
+            clarificationOptions,
+            reasoning,
+            selectedClarificationOptionIndex: null,
+            isEditing: false,
+            runId: payload.run_id || '',
+            calendarId: requestCalendarId,
+            snapshot,
+            originalEvents: [],
+            showReasoning: false,
+          };
+          setStagedPlanByCalendar((prev) => ({ ...prev, [requestCalendarId]: staged }));
           appendAiAssistantMessage(requestCalendarId, assistantMessage);
         }
       } catch (err) {
         const message =
           err instanceof Error
             ? err.message
-            : 'Unable to contact the AI planner. Make sure Ollama is running locally.';
+            : 'Unable to contact the planner service.';
         appendAiAssistantMessage(requestCalendarId, message, 'error');
       } finally {
         setAiLoading(false);
@@ -749,12 +1004,158 @@ function App() {
       endHour,
       appendAiMessage,
       appendAiAssistantMessage,
-      applyPlannedEvents,
     ]
   );
 
+  const handleToggleProposalEdit = useCallback(() => {
+    if (!currentCalendarId) return;
+    setStagedPlanByCalendar((prev) => {
+      const current = prev[currentCalendarId];
+      if (!current) return prev;
+      return {
+        ...prev,
+        [currentCalendarId]: {
+          ...current,
+          isEditing: !current.isEditing,
+        },
+      };
+    });
+  }, [currentCalendarId]);
+
+  const handleUpdateProposalEvent = useCallback(
+    (index: number, patch: Partial<AiPlanEvent>) => {
+      if (!currentCalendarId) return;
+      setStagedPlanByCalendar((prev) => {
+        const current = prev[currentCalendarId];
+        if (!current) return prev;
+        const nextEvents = cloneAiPlanEvents(current.events);
+        if (!nextEvents[index]) return prev;
+        nextEvents[index] = normalizeDraftEvent({ ...nextEvents[index], ...patch });
+        return {
+          ...prev,
+          [currentCalendarId]: {
+            ...current,
+            events: nextEvents,
+            isEditing: true,
+          },
+        };
+      });
+    },
+    [currentCalendarId]
+  );
+
+  const handleSelectClarificationOption = useCallback(
+    (index: number) => {
+      if (!currentCalendarId) return;
+      setStagedPlanByCalendar((prev) => {
+        const current = prev[currentCalendarId];
+        if (!current || current.status !== 'needs_clarification') return prev;
+        const choice = current.clarificationOptions[index];
+        if (!choice) return prev;
+        const selectedEvent = clarificationChoiceToEvent(choice);
+        return {
+          ...prev,
+          [currentCalendarId]: {
+            ...current,
+            status: 'ready',
+            events: [selectedEvent],
+            originalEvents: [selectedEvent],
+            selectedClarificationOptionIndex: index,
+            assistantMessage: `Selected ${choice.label}. Review it and approve when ready.`,
+            isEditing: false,
+          },
+        };
+      });
+    },
+    [currentCalendarId]
+  );
+
+  const handleToggleReasoning = useCallback(() => {
+    if (!currentCalendarId) return;
+    setStagedPlanByCalendar((prev) => {
+      const current = prev[currentCalendarId];
+      if (!current) return prev;
+      return {
+        ...prev,
+        [currentCalendarId]: {
+          ...current,
+          showReasoning: !current.showReasoning,
+        },
+      };
+    });
+  }, [currentCalendarId]);
+
+  const handleCommitAiProposal = useCallback(async () => {
+    if (!currentCalendarId || !currentStagedPlan || aiCommitting) return;
+
+    const finalEvents = cloneAiPlanEvents(currentStagedPlan.events);
+    const correctionDiff = buildManualCorrectionDiff(currentStagedPlan.originalEvents, finalEvents);
+    const confirmedAt = new Date().toISOString();
+    const confirmedSchedule = {
+      status: currentStagedPlan.status,
+      assistantMessage: currentStagedPlan.assistantMessage,
+      events: finalEvents,
+      run_id: currentStagedPlan.runId,
+      calendar_id: currentCalendarId,
+      selected_clarification_option_index: currentStagedPlan.selectedClarificationOptionIndex,
+    };
+
+    setAiCommitting(true);
+    try {
+      try {
+        await fetch('/api/ai/confirm-plan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            calendarId: currentCalendarId,
+            calendar_id: currentCalendarId,
+            run_id: currentStagedPlan.runId,
+            user_confirmed: true,
+            confirmed_at: confirmedAt,
+            confirmed_schedule: confirmedSchedule,
+            schedule_draft: {
+              status: currentStagedPlan.status,
+              assistantMessage: currentStagedPlan.assistantMessage,
+              events: currentStagedPlan.events,
+              clarificationOptions: currentStagedPlan.clarificationOptions,
+              reasoning: currentStagedPlan.reasoning,
+              selectedClarificationOptionIndex: currentStagedPlan.selectedClarificationOptionIndex,
+            },
+            correction_diff: correctionDiff,
+            preference_updates: correctionDiff.preference_updates,
+          }),
+        });
+      } catch (err) {
+        console.error('Failed to confirm plan with planner service:', err);
+      }
+
+      const result = await applyPlannedEvents(finalEvents, currentStagedPlan.snapshot);
+      if (result.created > 0) {
+        setAiRollbackByCalendar((prev) => ({ ...prev, [currentCalendarId]: currentStagedPlan.snapshot }));
+      }
+
+      clearStagedProposal(currentCalendarId);
+      const compactParts = [`Committed ${result.created} event${result.created === 1 ? '' : 's'}.`];
+      if (correctionDiff.event_diffs.length > 0) {
+        compactParts.push(`Captured ${correctionDiff.event_diffs.length} edit${correctionDiff.event_diffs.length === 1 ? '' : 's'}.`);
+      }
+      if (correctionDiff.preference_updates.length > 0) {
+        compactParts.push('Updated local memory from the correction.');
+      }
+      appendAiAssistantMessage(currentCalendarId, compactParts.join(' '), 'success');
+    } finally {
+      setAiCommitting(false);
+    }
+  }, [currentCalendarId, currentStagedPlan, aiCommitting, applyPlannedEvents, appendAiAssistantMessage, clearStagedProposal]);
+
   const handleAiRollback = useCallback(() => {
     if (!currentCalendarId) return;
+
+    if (stagedPlanByCalendar[currentCalendarId]) {
+      clearStagedProposal(currentCalendarId);
+      appendAiAssistantMessage(currentCalendarId, 'Cleared the staged proposal.', 'success');
+      return;
+    }
 
     const snapshot = aiRollbackByCalendar[currentCalendarId];
     if (!snapshot) return;
@@ -765,8 +1166,26 @@ function App() {
     setDayViewIndex(snapshot.dayViewIndex);
 
     setAiRollbackByCalendar((prev) => ({ ...prev, [currentCalendarId]: null }));
-    appendAiAssistantMessage(currentCalendarId, 'Rolled back the last AI-generated event batch.', 'success');
-  }, [currentCalendarId, aiRollbackByCalendar, appendAiAssistantMessage]);
+    appendAiAssistantMessage(currentCalendarId, 'Rolled back the last proposal batch.', 'success');
+  }, [currentCalendarId, aiRollbackByCalendar, stagedPlanByCalendar, clearStagedProposal, appendAiAssistantMessage]);
+
+  useEffect(() => {
+    if (!currentCalendarId) return;
+    if (!currentStagedPlan) {
+      setPreviewEventsByCalendar((prev) => ({ ...prev, [currentCalendarId]: null }));
+      return;
+    }
+
+    let cancelled = false;
+    buildPreviewEvents(currentStagedPlan.events, startDate).then((preview) => {
+      if (cancelled) return;
+      setPreviewEventsByCalendar((prev) => ({ ...prev, [currentCalendarId]: preview }));
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentCalendarId, currentStagedPlan, startDate]);
 
   // Load a specific calendar by ID
   const loadCalendar = useCallback(async (calId: string) => {
@@ -1116,6 +1535,7 @@ function App() {
           <div className="app-map-section-day">
             <MapView
               events={mapEvents}
+              previewEvents={currentPreviewEvents || undefined}
               hoveredEventId={hoveredEventId}
               onHoverEvent={handleHoverEvent}
               preciseZoomEnabled
@@ -1125,6 +1545,7 @@ function App() {
         ) : (
           <MapView
             events={mapEvents}
+            previewEvents={currentPreviewEvents || undefined}
             hoveredEventId={hoveredEventId}
             onHoverEvent={handleHoverEvent}
             preciseZoomEnabled={false}
@@ -1143,14 +1564,30 @@ function App() {
         onClose={() => setShowCalendarManager(false)}
       />
 
-      <AiPlannerChat
+      <PlannerApprovalPanel
         messages={currentAiMessages}
         loading={aiLoading}
         onSendMessage={handleAiMessage}
         disabled={!currentCalendarId}
-        disabledHint="Select or create a calendar first, then ask me to schedule your travel plans."
+        disabledHint="Select or create a calendar first, then ask me to plan your schedule."
         canRollback={canRollbackAiChanges}
         onRollback={handleAiRollback}
+        stagedPlan={currentStagedPlan}
+        onCommit={handleCommitAiProposal}
+        onToggleProposalEdit={handleToggleProposalEdit}
+        onUpdateProposalEvent={handleUpdateProposalEvent}
+        onSelectClarificationOption={handleSelectClarificationOption}
+        onToggleReasoning={handleToggleReasoning}
+        showReasoning={!!currentStagedPlan?.showReasoning}
+        commitDisabled={
+          aiCommitting ||
+          !currentStagedPlan ||
+          (currentStagedPlan.status === 'ready' && currentStagedPlan.events.length === 0) ||
+          (currentStagedPlan.status === 'needs_clarification' &&
+            currentStagedPlan.selectedClarificationOptionIndex === null &&
+            currentStagedPlan.events.length === 0)
+        }
+        commitDisabledHint="Choose a clarification option or draft a plan first."
       />
     </AppShell>
   );

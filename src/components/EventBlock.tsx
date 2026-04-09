@@ -265,14 +265,20 @@ const EventBlock: React.FC<EventBlockProps> = ({
 
     // Start location search
     useEffect(() => {
-        nominatimSearch(locationQuery, setSearchResults, setIsSearching, searchTimeoutRef);
-        return () => { if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current); };
+        const timeoutRef = searchTimeoutRef;
+        nominatimSearch(locationQuery, setSearchResults, setIsSearching, timeoutRef);
+        return () => {
+            if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        };
     }, [locationQuery, nominatimSearch]);
 
     // Destination search
     useEffect(() => {
-        nominatimSearch(destQuery, setDestResults, setIsDestSearching, destSearchTimeoutRef);
-        return () => { if (destSearchTimeoutRef.current) clearTimeout(destSearchTimeoutRef.current); };
+        const timeoutRef = destSearchTimeoutRef;
+        nominatimSearch(destQuery, setDestResults, setIsDestSearching, timeoutRef);
+        return () => {
+            if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        };
     }, [destQuery, nominatimSearch]);
 
     const parseLocation = useCallback((result: NominatimResult): LocationData => ({

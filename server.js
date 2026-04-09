@@ -307,6 +307,28 @@ app.post('/api/ai/plan-events', async (req, res) => {
     }
 });
 
+app.post('/api/ai/confirm-plan', async (req, res) => {
+    try {
+        const plannerRes = await fetch(`${PLANNER_SERVICE_URL}/api/ai/confirm-plan`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(req.body ?? {}),
+        });
+
+        const text = await plannerRes.text();
+        res.status(plannerRes.status);
+        res.setHeader('Content-Type', plannerRes.headers.get('content-type') || 'application/json');
+        res.send(text);
+    } catch (err) {
+        res.status(503).json({
+            error: `Unable to reach planner service at ${PLANNER_SERVICE_URL}.`,
+            detail: err?.message || 'Planner confirmation proxy request failed',
+        });
+    }
+});
+
 // ─── Legacy endpoints (backwards compat) ───
 app.get('/api/calendar', (req, res) => {
     // Return the first (most recent) calendar or default
