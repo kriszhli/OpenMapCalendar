@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const nodeCmd = process.execPath;
+const pythonCmd = process.env.PYTHON || 'python3';
 
 function run(name, script) {
   const child = spawn(npmCmd, ['run', script], {
@@ -35,7 +36,23 @@ function runServer() {
   return child;
 }
 
-const children = [runServer(), run('client', 'dev:client')];
+function runPlanner() {
+  const child = spawn(pythonCmd, ['-m', 'planner_service', '--serve'], {
+    stdio: 'inherit',
+    env: process.env,
+  });
+
+  child.on('exit', (code) => {
+    if (code && code !== 0) {
+      console.error(`planner exited with code ${code}`);
+      shutdown(code);
+    }
+  });
+
+  return child;
+}
+
+const children = [runPlanner(), runServer(), run('client', 'dev:client')];
 
 function shutdown(code = 0) {
   for (const child of children) {

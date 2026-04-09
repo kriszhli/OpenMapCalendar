@@ -105,23 +105,43 @@ The AI layer is engineered as a constrained planning system, not just free-form 
 - Map: Leaflet
 - Routing: OSRM
 - Geocoding: Nominatim
-- Local LLM: Ollama (`gemma3:1b` by default)
+- Local LLM: Ollama (`gemma4:e2b` by default)
 
 ## Optional AI Setup
 
 ```bash
 ollama serve
-ollama pull gemma3:1b
+ollama pull gemma4:e2b
 ```
 
 Optional env vars:
 - `OLLAMA_URL` (default `http://127.0.0.1:11434`)
-- `OLLAMA_MODEL` (default `gemma3:1b`)
+- `OLLAMA_MODEL` (default `gemma4:e2b`)
 - `OLLAMA_TIMEOUT_MS` (default `45000`)
+- `PLANNER_SERVICE_URL` (default `http://127.0.0.1:8001`)
+
+### Local planner service
+
+The AI planner now runs in a small Python service that the Node server proxies to.
+
+Start it directly:
+
+```bash
+python3 -m planner_service --serve
+```
+
+Run a smoke test that prints the raw model output, task queue, and schedule draft:
+
+```bash
+python3 -m planner_service --smoke "On the second day, schedule a museum visit and check the weather before lunch."
+```
+
+`npm run dev` starts the planner service automatically alongside the Node server and Vite client.
 
 ## Scripts
 
 - `npm run dev` - API + Vite
+- `npm run dev:planner` - planner service only
 - `npm run build` - type-check + production build
 - `npm run start` - run server
 - `npm run host` - build + host
