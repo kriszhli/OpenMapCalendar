@@ -26,22 +26,6 @@ export interface TimeBlock {
     preciseRouteCache?: PreciseRouteCache;
 }
 
-export interface DragState {
-    isDragging: boolean;
-    dayIndex: number;
-    startY: number;
-    currentY: number;
-    startMinutes: number;
-    currentMinutes: number;
-}
-
-export interface CalendarSettings {
-    numDays: number;
-    startHour: number;
-    endHour: number;
-    viewMode: ViewMode;
-}
-
 export const PALETTE_COLORS = [
     '#5B7FBF', // muted blue
     '#7BA887', // sage green
@@ -57,15 +41,10 @@ export const SNAP_INTERVAL = 30; // minutes
  * Ensures the first and last time labels have room and aren't clipped.
  * All minute↔px conversions share this constant for pixel-perfect alignment.
  */
-export const VERTICAL_INSET = 12;
+const VERTICAL_INSET = 12;
 
 export function snapToInterval(minutes: number, interval: number = SNAP_INTERVAL): number {
     return Math.round(minutes / interval) * interval;
-}
-
-export function magneticSnap(minutes: number, interval: number = SNAP_INTERVAL, strength: number = 0.7): number {
-    const nearest = snapToInterval(minutes, interval);
-    return minutes + (nearest - minutes) * strength;
 }
 
 /**

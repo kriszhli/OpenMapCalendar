@@ -7,7 +7,6 @@ import DayGrid from './components/DayGrid';
 import DaySidebar from './components/DaySidebar';
 import MapView from './components/MapView';
 import CalendarManager from './components/CalendarManager';
-import './App.css';
 
 interface CalendarState {
   numDays: number;
