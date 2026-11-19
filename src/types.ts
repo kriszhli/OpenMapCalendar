@@ -12,6 +12,13 @@ export interface PreciseRouteCache {
     coords: [number, number][];
 }
 
+export const modeLabels = {
+  walking: 'Walk',
+  driving: 'Drive',
+  transit: 'Public transit',
+  bicycling: 'Cycle',
+} as const;
+
 export interface TimeBlock {
     id: string;
     dayIndex: number;
@@ -22,6 +29,7 @@ export interface TimeBlock {
     description: string;
     location?: LocationData;      // start / origin
     destination?: LocationData;   // end / destination (route planning)
+    transport?: keyof typeof modeLabels;
     routeMode?: 'simple' | 'precise' | 'hidden'; // default 'simple' (bezier curve)
     preciseRouteCache?: PreciseRouteCache;
 }

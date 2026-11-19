@@ -91,9 +91,20 @@ const mergeState = (current, base, incoming) => {
 
     for (const [id, incomingEvent] of incomingMap.entries()) {
         const baseEvent = baseMap.get(id);
-        if (!deepEqual(incomingEvent, baseEvent)) {
+        if (deepEqual(incomingEvent, baseEvent)) continue;
+        const currentEvent = currentMap.get(id);
+        if (!baseEvent || !currentEvent) {
             currentMap.set(id, incomingEvent);
+            continue;
         }
+        // A timeline edit to the title must preserve a travel mode edited in the atlas.
+        const next = { ...currentEvent };
+        for (const key of new Set([...Object.keys(baseEvent), ...Object.keys(incomingEvent)])) {
+            if (deepEqual(baseEvent[key], incomingEvent[key])) continue;
+            if (Object.hasOwn(incomingEvent, key)) next[key] = incomingEvent[key];
+            else delete next[key];
+        }
+        currentMap.set(id, next);
     }
 
     for (const id of baseMap.keys()) {
@@ -294,6 +305,21 @@ app.post('/api/calendars/:id', (req, res) => {
     } catch (err) {
         res.status(500).json({ error: 'Failed to save data' });
     }
+});
+
+app.patch('/api/calendars/:id/events/:eventId/transport', (req, res) => {
+    const cal = calendars.get(req.params.id);
+    if (!cal) return res.status(404).json({ error: 'Calendar not found' });
+    const transport = req.body?.transport;
+    if (transport !== null && !(typeof transport === 'string' && eventInput.shape.transport.safeParse(transport).success)) {
+        return res.status(400).json({ error: 'Choose walking, transit, driving, bicycling or null' });
+    }
+    const block = Object.values(cal.state.events).flat().find(event => event.id === req.params.eventId);
+    if (!block) return res.status(404).json({ error: 'Event not found' });
+    if (transport === null) delete block.transport;
+    else block.transport = transport;
+    const saved = saveState(cal, cal.state);
+    res.json({ event: describeEvent(saved.state, block), revision: saved.revision });
 });
 
 app.get('/api/calendars/:id/events', (req, res) => {

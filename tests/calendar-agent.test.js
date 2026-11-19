@@ -16,12 +16,13 @@ const event = { title: 'Train to Albany', date: '2026-11-02', startTime: '05:45'
 const state = { startDate: '2026-10-31', numDays: 2, startHour: 7, endHour: 22, viewMode: 'row', events: {} };
 
 test('calendar dates, extended hours and retry identity', () => {
-    const input = eventInput.parse({ ...event, eventId: randomUUID() });
+    const input = eventInput.parse({ ...event, transport: 'transit', eventId: randomUUID() });
     const added = addEvent(state, input);
     assert.equal(added.state.numDays, 3);
     assert.equal(added.state.startHour, 5);
     assert.equal(added.state.events[2][0].startMinutes, 345);
     assert.deepEqual(added.event.location, event.location);
+    assert.equal(added.event.transport, 'transit');
     assert.equal(addEvent(added.state, input).status, 200);
     assert.equal(addEvent(added.state, { ...input, title: 'Another train' }).status, 409);
     assert.equal(addEvent(added.state, { ...event, date: '2027-01-01' }).status, 422);
@@ -32,7 +33,7 @@ test('calendar dates, extended hours and retry identity', () => {
 
 test('invalid dates, times, colors and coordinates are rejected', () => {
     for (const fields of [{ title: ' ' }, { date: '2026-02-30' }, { startTime: '24:00' },
-        { endTime: '10:60' }, { color: 'invalid' }, { location: { ...event.location, lng: 190 } }]) {
+        { endTime: '10:60' }, { color: 'invalid' }, { transport: 'plane' }, { location: { ...event.location, lng: 190 } }]) {
         assert.equal(eventInput.safeParse({ ...event, ...fields }).success, false);
     }
     assert.equal(addEvent(state, { ...event, endTime: event.startTime }).status, 400);

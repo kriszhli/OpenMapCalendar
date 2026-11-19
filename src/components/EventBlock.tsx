@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { TimeBlock, LocationData } from '../types';
-import { minutesToPx, pxToMinutes, snapToInterval, SNAP_INTERVAL } from '../types';
+import { modeLabels, minutesToPx, pxToMinutes, snapToInterval, SNAP_INTERVAL } from '../types';
 import ColorPalette from './ColorPalette';
 import './EventBlock.css';
 
@@ -399,6 +399,20 @@ const EventBlock: React.FC<EventBlockProps> = ({
     // ─── Location zone (shared between inline and popout) ───
     const locationZone = (
         <div className="event-block-location-zone">
+            {(block.location || block.destination) && (
+                <label className="event-transport">
+                    Travel mode
+                    <select
+                        value={block.transport || ''}
+                        onChange={e => onUpdate({ ...block, transport: (e.target.value || undefined) as TimeBlock['transport'] })}
+                    >
+                        <option value="">Unspecified</option>
+                        {Object.entries(modeLabels).map(([mode, label]) => (
+                            <option key={mode} value={mode}>{label}</option>
+                        ))}
+                    </select>
+                </label>
+            )}
             <div className="location-row">
                 {renderLocationInput(
                     'Start...', '📍',

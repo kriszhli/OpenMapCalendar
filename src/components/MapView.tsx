@@ -286,7 +286,7 @@ const MapView: React.FC<MapViewProps> = ({
         ) => {
             const routeOpacity = 0.5;
             const routeWeight = 3;
-            if (mode === 'precise') {
+            if (mode === 'precise' && (!ev.transport || ev.transport === 'driving')) {
                 const cache = ev.preciseRouteCache;
                 const hasValidCache =
                     !!cache &&
