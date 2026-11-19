@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
@@ -98,4 +99,65 @@ test('an external MCP client and a stale browser save share durable events', asy
     await api.close();
     api = await startApi(dir);
     assert.deepEqual(await (await fetch(api.url + path + '/events')).json(), schedule);
+});
+
+test('photos, thumbnails and routes survive restart, independent of calendar polling', async t => {
+    const dir = await mkdtemp(join(tmpdir(), 'openmapcalendar-photos-'));
+    const block = { id:'pier',dayIndex:0,startMinutes:540,endMinutes:600,title:'Pier',color:'#447755',
+        location:event.location, destination:{name:'Harbor',lat:40.76,lng:-73.9}, transport:'walking' };
+    const file = join(dir,'coast.json');
+    const snapshot = { name:'Coast',state:{...state,events:{0:[block]}},revision:12 };
+    await writeFile(file,JSON.stringify(snapshot));
+    let api = await startApi(dir);
+    t.after(async()=>{await api.close();await rm(dir,{recursive:true,force:true});});
+    const calendarUrl = api.url+'/api/calendars/coast';
+    const stale = await (await fetch(calendarUrl)).json();
+    const changeMode = await fetch(calendarUrl+'/events/pier/transport', {
+        method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({transport:'transit'}) });
+    assert.equal(changeMode.status,200);
+    const draft = structuredClone(stale.state);
+    draft.events[0][0].title = 'Harbor shuttle';
+    const browserEdit = await fetch(calendarUrl,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({baseState:stale.state,baseRevision:stale.revision,state:draft})});
+    assert.equal(browserEdit.status,200);
+    const photoPath = '/api/calendars/coast/events/pier/destination/photos';
+    const { default:sharp } = await import('sharp');
+    const image = await sharp({create:{width:800,height:600,channels:3,background:'#367d68'}}).jpeg().toBuffer();
+    const send = data=>fetch(api.url+photoPath,{method:'POST',headers:{'Content-Type':'image/jpeg'},body:data});
+    assert.equal((await send(Buffer.from('invalid'))).status,422);
+    const upload = await send(image);
+    assert.equal(upload.status,201);
+    const {id} = await upload.json();
+    const atlas = async()=> (await fetch(api.url+'/api/atlas')).json();
+    const [trip] = await atlas();
+    assert.equal(trip.events[0].transport,'transit');
+    assert.equal(trip.events[0].title,'Harbor shuttle');
+    assert.deepEqual(trip.events[0].photos.location,[]);
+    const [photo] = trip.events[0].photos.destination;
+    assert.equal(photo.id,id);
+    const thumbnail = await fetch(api.url+photo.thumb);
+    assert.equal(thumbnail.headers.get('content-type'),'image/webp');
+    assert.equal((await sharp(Buffer.from(await thumbnail.arrayBuffer())).metadata()).width,360);
+    assert.deepEqual(Buffer.from(await (await fetch(api.url+photo.url)).arrayBuffer()),image);
+    await api.close();
+    await writeFile(file,JSON.stringify({...snapshot,name:'Stale legacy file'}));
+    api = await startApi(dir);
+    assert.deepEqual(await atlas(),[trip]);
+    const backupFile = join(dir,'export.sqlite');
+    const exportResponse = await fetch(api.url+'/api/journal/backup');
+    assert.equal(exportResponse.status,200);
+    await writeFile(backupFile,Buffer.from(await exportResponse.arrayBuffer()));
+    const exported = new DatabaseSync(backupFile,{ readOnly:true });
+    assert.equal(exported.prepare('SELECT name FROM trips').get().name,'Coast');
+    assert.deepEqual(Buffer.from(exported.prepare('SELECT original FROM photos').get().original),image);
+    exported.close();
+    assert.equal((await fetch(api.url+'/api/atlas',{headers:{Origin:'https://other.example'}})).status,403);
+    const stateResult = await (await fetch(api.url+'/api/calendars/coast')).json();
+    assert.equal(stateResult.revision,14);
+    assert.equal(stateResult.state.events[0][0].photos,undefined);
+    assert.equal((await fetch(api.url+'/api/calendars/coast',{method:'DELETE'})).status,200);
+    assert.equal((await fetch(api.url+photo.thumb)).status,404);
+    await api.close();
+    api = await startApi(dir);
+    assert.deepEqual(await atlas(),[]);
 });

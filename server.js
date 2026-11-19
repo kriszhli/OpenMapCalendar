@@ -1,6 +1,6 @@
 import express from 'express';
-import cors from 'cors';
-import fs from 'fs';
+import { openJournal } from './lib/journal-db.js';
+import { journalRoutes } from './lib/journal-api.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
@@ -24,11 +24,18 @@ const DEFAULT_STATE = {
     events: {},
 };
 
-// In-memory cache: Map<id, { name, state, revision, updatedAt }>
-const calendars = new Map();
-
-app.use(cors());
-app.use(express.json());
+// Browser writes and private media use the same origin as the app. CLI and MCP
+// clients send no Origin. Vite forwards the original Host through its API proxy.
+app.use('/api', (req, res, next) => {
+    const origin = req.get('Origin');
+    if (origin) {
+        let host;
+        try { host = new URL(origin).host; } catch { /* opaque origin */ }
+        if (host !== req.get('Host')) return res.status(403).json({ error: 'Unrecognized browser origin' });
+    }
+    next();
+});
+app.use(express.json({ limit: '8mb' }));
 
 if (SHOULD_SERVE_STATIC) {
     // Serve static files from the build directory
@@ -117,112 +124,26 @@ const mergeState = (current, base, incoming) => {
     return merged;
 };
 
-const generateId = () => crypto.randomUUID();
-
-const ensureCalendarsDir = () => {
-    if (!fs.existsSync(CALENDARS_DIR)) {
-        fs.mkdirSync(CALENDARS_DIR, { recursive: true });
-    }
-};
-
-const calendarFilePath = (id) => path.join(CALENDARS_DIR, `${id}.json`);
-
-const readCalendarFromDisk = (id) => {
-    const filePath = calendarFilePath(id);
-    if (!fs.existsSync(filePath)) return null;
-    try {
-        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        return {
-            id,
-            name: raw.name || 'Untitled',
-            state: normalizeState(raw.state || raw),
-            revision: Number.isSafeInteger(raw.revision) ? raw.revision : 0,
-            updatedAt: raw.updatedAt || new Date().toISOString(),
-        };
-    } catch {
-        return null;
-    }
-};
-
-const writeCalendarToDisk = (id, data) => {
-    ensureCalendarsDir();
-    const file = calendarFilePath(id);
-    const temp = file + '.tmp';
-    fs.writeFileSync(temp, JSON.stringify({
-        revision: data.revision ?? 0,
-        name: data.name,
-        state: data.state,
-        updatedAt: data.updatedAt,
-    }, null, 2));
-    fs.renameSync(temp, file);
-};
-
+const calendars = openJournal(CALENDARS_DIR, normalizeState, process.env.CALENDARS_DIR ? null : LEGACY_DATA_FILE);
+journalRoutes(app, calendars);
 const saveState = (cal, state) => {
     const next = { ...cal, state, revision: cal.revision + 1, updatedAt: new Date().toISOString() };
-    writeCalendarToDisk(cal.id, next);
-    calendars.set(cal.id, next);
+    calendars.save(next);
     return next;
 };
 
-const deleteCalendarFromDisk = (id) => {
-    const filePath = calendarFilePath(id);
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-};
-
-// ─── Initialize: load calendars from disk, migrate legacy data ───
-
-const loadAllCalendars = () => {
-    ensureCalendarsDir();
-
-    // Migrate legacy calendar-data.json if it exists and calendars dir is empty
-    const existingFiles = fs.readdirSync(CALENDARS_DIR).filter(f => f.endsWith('.json'));
-
-    if (!process.env.CALENDARS_DIR && existingFiles.length === 0 && fs.existsSync(LEGACY_DATA_FILE)) {
-        try {
-            const legacyRaw = JSON.parse(fs.readFileSync(LEGACY_DATA_FILE, 'utf8'));
-            const id = generateId();
-            const calData = {
-                name: 'My Calendar',
-                state: normalizeState(legacyRaw),
-                updatedAt: new Date().toISOString(),
-            };
-            writeCalendarToDisk(id, calData);
-            calendars.set(id, { ...calData, id, revision: 0 });
-            console.log(`Migrated legacy calendar-data.json → calendars/${id}.json`);
-        } catch (err) {
-            console.error('Failed to migrate legacy data:', err);
-        }
-    }
-
-    // Load all calendar files
-    const files = fs.readdirSync(CALENDARS_DIR).filter(f => f.endsWith('.json'));
-    for (const file of files) {
-        const id = file.replace('.json', '');
-        if (!calendars.has(id)) {
-            const cal = readCalendarFromDisk(id);
-            if (cal) {
-                calendars.set(id, cal);
-            }
-        }
-    }
-};
-
-loadAllCalendars();
-
 // ─── API: List all calendars ───
 app.get('/api/calendars', (req, res) => {
-    const list = [];
-    for (const [id, cal] of calendars.entries()) {
-        list.push({ id, name: cal.name, updatedAt: cal.updatedAt, ...calendarWindow(cal.state) });
-    }
-    list.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    const list = calendars.list().map(cal => ({
+        id: cal.id, name: cal.name, updatedAt: cal.updatedAt, ...calendarWindow(cal.state),
+    }));
     res.json(list);
 });
 
 // ─── API: Create a new calendar ───
 app.post('/api/calendars', (req, res) => {
     try {
-        const id = generateId();
+        const id = crypto.randomUUID();
         const input = calendarInput.safeParse({ name: 'Untitled', ...req.body });
         if (!input.success) return res.status(400).json({ error: input.error.message });
         const { name, startDate = localDate(), numDays = DEFAULT_STATE.numDays } = input.data;
@@ -233,8 +154,7 @@ app.post('/api/calendars', (req, res) => {
             revision: 0,
             updatedAt: new Date().toISOString(),
         };
-        writeCalendarToDisk(id, calData);
-        calendars.set(id, calData);
+        calendars.save(calData);
         res.json({ id, name: calData.name });
     } catch (err) {
         res.status(500).json({ error: 'Failed to create calendar' });
@@ -252,17 +172,16 @@ app.put('/api/calendars/:id/rename', (req, res) => {
 
     cal.name = name;
     cal.updatedAt = new Date().toISOString();
-    writeCalendarToDisk(id, cal);
+    calendars.save(cal);
     res.json({ success: true, id, name: cal.name });
 });
 
 // ─── API: Delete a calendar ───
 app.delete('/api/calendars/:id', (req, res) => {
     const { id } = req.params;
-    if (!calendars.has(id)) return res.status(404).json({ error: 'Calendar not found' });
+    if (!calendars.get(id)) return res.status(404).json({ error: 'Calendar not found' });
 
     calendars.delete(id);
-    deleteCalendarFromDisk(id);
     res.json({ success: true });
 });
 
@@ -345,11 +264,9 @@ app.post('/api/calendars/:id/events', (req, res) => {
 // ─── Legacy endpoints (backwards compat) ───
 app.get('/api/calendar', (req, res) => {
     // Return the first (most recent) calendar or default
-    const list = [...calendars.values()].sort((a, b) =>
-        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-    );
+    const list = calendars.list();
     if (list.length > 0) {
-        const cal = list[0];
+        const cal = calendars.get(list[0].id);
         return res.json({ state: cal.state, revision: cal.revision });
     }
     res.json({ state: DEFAULT_STATE, revision: 0 });
@@ -357,13 +274,11 @@ app.get('/api/calendar', (req, res) => {
 
 app.post('/api/calendar', (req, res) => {
     // Save to the first (most recent) calendar
-    const list = [...calendars.values()].sort((a, b) =>
-        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-    );
+    const list = calendars.list();
     if (list.length === 0) {
         return res.status(404).json({ error: 'No calendars exist' });
     }
-    const cal = list[0];
+    const cal = calendars.get(list[0].id);
     try {
         const incoming = normalizeState(req.body?.state ?? req.body);
         const saved = saveState(cal, incoming);
@@ -385,7 +300,7 @@ if (SHOULD_SERVE_STATIC) {
     });
 }
 
-const server = app.listen(PORT, process.env.HOST || '0.0.0.0', (error) => {
+const server = app.listen(PORT, process.env.HOST || '127.0.0.1', (error) => {
     if (error) {
         console.error('Calendar API could not start:', error.message);
         process.exitCode = 1;

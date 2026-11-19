@@ -6,16 +6,22 @@ A local-first trip calendar with an editable timeline and a live map. You can dr
 
 ## Run locally
 
-Use Node.js 22.12 or newer and npm.
+Use Node.js 22.16 or newer and npm.
 
 ```sh
 npm ci
 npm run dev
 ```
 
-Open the app at [localhost:5173](http://localhost:5173). Vite proxies calendar requests to the Express API on port 3000. For a single server, run `npm run host` and open [localhost:3000](http://localhost:3000). Shell agents only need the API, started with `npm start`. By default the app supports access from your LAN. Set `HOST=127.0.0.1` to bind the app and API to loopback.
+Open the app at [localhost:5173](http://localhost:5173). Vite proxies calendar requests to the Express API on port 3000. For a single server, run `npm run host` and open [localhost:3000](http://localhost:3000). Shell agents only need the API, started with `npm start`. The app and API bind to loopback by default. Set `HOST=0.0.0.0` to share the journal on a trusted LAN. Devices with access can read and edit its contents.
 
-In Calendar Manager, create or select a calendar. Choose its start date, hours and Day, Row or Grid view. Drag to create a block, resize it to adjust the time, and add notes or map locations. Route lines can use a simple curve or a driving route, or you can hide them. The server stores each calendar in `calendars/` and an open calendar polls for changes once per second.
+In Calendar Manager, create or select a calendar. Choose its start date, hours and Day, Row or Grid view. Drag to create a block, resize it to adjust the time, and add notes or map locations. Route lines can use a simple curve or a driving route, or you can hide them. An open timeline checks for changes once per second.
+
+## Storage and backup
+
+The server keeps trips, events, route geometry, photos and thumbnails in SQLite at `calendars/journal.sqlite`. On first startup it imports previous calendar JSON files in one transaction. It retains the source files and records that migration completed, including when a trip is later deleted. Set `CALENDARS_DIR` to run an independent library.
+
+Use `GET /api/journal/backup` to download a consistent SQLite snapshot, including originals. To open a backup separately, place it in an empty directory as `journal.sqlite` and run the server with `CALENDARS_DIR` pointing there.
 
 ## Connect an agent
 
