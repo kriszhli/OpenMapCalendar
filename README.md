@@ -17,6 +17,23 @@ Open the app at [localhost:5173](http://localhost:5173). Vite proxies calendar r
 
 In Calendar Manager, create or select a calendar. Choose its start date, hours and Day, Row or Grid view. Drag to create a block, resize it to adjust the time, and add notes or map locations. Route lines can use a simple curve or a driving route, or you can hide them. The server stores each calendar in `calendars/` and an open calendar polls for changes once per second.
 
+## Connect an agent
+
+An agent working in this checkout can follow [AGENTS.md](AGENTS.md) and use HTTP immediately. For an MCP client, start the API as above, then register the following local stdio server. Replace the path with the absolute path to this checkout. `OPENMAPCALENDAR_URL` can override the default API address if you run it elsewhere.
+
+```json
+{
+  "mcpServers": {
+    "open-map-calendar": {
+      "command": "node",
+      "args": ["/absolute/path/to/OpenMapCalendar/scripts/calendar-mcp.js"]
+    }
+  }
+}
+```
+
+The tools are `list_calendars`, `create_calendar`, `list_events` and `add_event`. For example, ask a connected agent “Add a train to Albany to my November trip on November 20, 2026, from 9 to 11 AM.” The agent can select the calendar by ID, check its schedule and return the saved event. The browser can be closed throughout.
+
 ## Use HTTP directly
 
 List calendars with `GET /api/calendars`. On a fresh install, create one with a name and an optional starting date and day count.
@@ -44,4 +61,4 @@ curl -fsS "$api/api/calendars/CALENDAR_ID/events"
 
 ## Development
 
-`npm test` runs event validation and retry tests. `npm run lint` checks the source. `npm run build` type-checks the frontend and creates the production bundle.
+`npm test` runs event validation and a real MCP-to-HTTP integration test in a temporary calendar directory. `npm run lint` checks the source. `npm run build` type-checks the frontend and creates the production bundle.
