@@ -1,3 +1,4 @@
+import { addCalendarBasemap } from '../map/basemap';
 import React, { useEffect, useRef, useMemo, useCallback } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -100,57 +101,10 @@ const MapView: React.FC<MapViewProps> = ({
             zoomDelta: 1,
         });
 
-        const updateTileLayers = () => {
-            const theme = document.documentElement.getAttribute('data-theme') || 'dark';
-            const isBright = theme === 'bright';
-
-            // Base layer
-            const baseUrl = isBright
-                ? 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png'
-                : 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png';
-
-            // Labels layer
-            const labelsUrl = isBright
-                ? 'https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png'
-                : 'https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png';
-
-            map.eachLayer((layer) => {
-                if (layer instanceof L.TileLayer) {
-                    map.removeLayer(layer);
-                }
-            });
-
-            L.tileLayer(baseUrl, {
-                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-                maxZoom: 20,
-            }).addTo(map);
-
-            L.tileLayer(labelsUrl, {
-                maxZoom: 20,
-            }).addTo(map);
-        };
-
-        // Initial load
-        updateTileLayers();
-
-        // Listen for theme changes
-        const observer = new MutationObserver((mutations) => {
-            mutations.forEach((mutation) => {
-                if (mutation.type === 'attributes' && mutation.attributeName === 'data-theme') {
-                    updateTileLayers();
-                }
-            });
-        });
-
-        observer.observe(document.documentElement, {
-            attributes: true,
-            attributeFilter: ['data-theme'],
-        });
-
+        addCalendarBasemap(map);
         mapRef.current = map;
 
         return () => {
-            observer.disconnect();
             map.remove();
             mapRef.current = null;
         };
@@ -477,7 +431,7 @@ const MapView: React.FC<MapViewProps> = ({
 
     return (
         <div className="map-section">
-            <div ref={containerRef} className="map-container" />
+            <div ref={containerRef} className="map-container calendar-basemap" />
             {!hasLocations && (
                 <div className="map-empty-state">
                     <div className="map-empty-text">

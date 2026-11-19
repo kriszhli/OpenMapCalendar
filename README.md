@@ -23,6 +23,13 @@ The server keeps trips, events, route geometry, photos and thumbnails in SQLite 
 
 Use `GET /api/journal/backup` to download a consistent SQLite snapshot, including originals. To open a backup separately, place it in an empty directory as `journal.sqlite` and run the server with `CALENDARS_DIR` pointing there.
 
+## CARTO account
+
+The Node server reads `CARTO_API_KEY` from its environment or the gitignored `.env.carto.local` in the checkout root. Use a server-side variable and restart the API after changing it. The calendar requests same-origin resources. The layer picker offers the original CARTO map and Voyager.
+
+- Voyager raster tiles: `/api/maps/carto/tiles/voyager/{z}/{x}/{y}.png`
+- Voyager vector style: `/api/maps/carto/voyager/style.json`. Its tile, glyph, and sprite URLs also use the local proxy.
+
 ## Connect an agent
 
 An agent working in this checkout can follow [AGENTS.md](AGENTS.md) and use HTTP immediately. For an MCP client, start the API as above, then register the following local stdio server. Replace the path with the absolute path to this checkout. `OPENMAPCALENDAR_URL` can override the default API address if you run it elsewhere.

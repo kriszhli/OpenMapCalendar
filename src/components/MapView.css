@@ -14,17 +14,6 @@
     background: var(--bg-elevated);
 }
 
-/* B&W grayscale on map tiles (Dark Mode) */
-.map-container .leaflet-tile-pane {
-    filter: grayscale(1) contrast(0.98) brightness(1.5);
-    transition: filter 0.3s ease;
-}
-
-/* Bright Mode - Reset filters */
-[data-theme='bright'] .map-container .leaflet-tile-pane {
-    filter: none;
-}
-
 /* Style Leaflet controls to match theme */
 .map-container .leaflet-control-zoom a {
     background: var(--card) !important;

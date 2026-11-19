@@ -1,3 +1,4 @@
+import { useCalendarTheme } from '../useCalendarTheme';
 import React, { useRef } from 'react';
 import { motion } from 'framer-motion';
 import type { ViewMode } from '../types';
@@ -108,21 +109,7 @@ const TopControls: React.FC<TopControlsProps> = ({
 
     const activeIndex = VIEW_MODES.indexOf(viewMode);
 
-    const [theme, setTheme] = React.useState<'dark' | 'bright'>(() => {
-        if (typeof window !== 'undefined') {
-            const saved = localStorage.getItem('app-theme');
-            if (saved === 'dark' || saved === 'bright') return saved;
-            return window.matchMedia('(prefers-color-scheme: light)').matches ? 'bright' : 'dark';
-        }
-        return 'dark';
-    });
-
-    React.useEffect(() => {
-        document.documentElement.setAttribute('data-theme', theme);
-        localStorage.setItem('app-theme', theme);
-    }, [theme]);
-
-    const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'bright' : 'dark');
+    const { theme, toggleTheme } = useCalendarTheme();
 
     return (
         <div className="top-controls">

@@ -1,4 +1,6 @@
 import express from 'express';
+import { cartoRouter } from './lib/carto.js';
+import { existsSync } from 'node:fs';
 import { openJournal } from './lib/journal-db.js';
 import { journalRoutes } from './lib/journal-api.js';
 import path from 'path';
@@ -9,6 +11,9 @@ import { addEvent, calendarInput, calendarWindow, describeEvent, eventInput, loc
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const cartoEnv = path.join(__dirname, '.env.carto.local');
+if (existsSync(cartoEnv)) process.loadEnvFile(cartoEnv);
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 3000);
@@ -35,6 +40,7 @@ app.use('/api', (req, res, next) => {
     }
     next();
 });
+app.use('/api/maps/carto', cartoRouter({ key: process.env.CARTO_API_KEY }));
 app.use(express.json({ limit: '8mb' }));
 
 if (SHOULD_SERVE_STATIC) {
