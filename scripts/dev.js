@@ -20,7 +20,7 @@ function run(name, script) {
 }
 
 function runServer() {
-  const child = spawn(nodeCmd, ['server.js'], {
+  const child = spawn(nodeCmd, ['--watch', 'server.js'], {
     stdio: 'inherit',
     env: { ...process.env, SERVE_STATIC: 'false' },
   });
