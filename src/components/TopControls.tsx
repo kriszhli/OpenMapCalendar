@@ -1,6 +1,7 @@
 import React, { useRef } from 'react';
 import { motion } from 'framer-motion';
 import type { ViewMode } from '../types';
+import { localDateString } from '../types';
 import './TopControls.css';
 
 interface TopControlsProps {
@@ -100,7 +101,7 @@ const TopControls: React.FC<TopControlsProps> = ({
     };
 
     const handleStartHourChange = (newHour: number) => onStartHourChange(Math.max(0, Math.min(23, newHour)));
-    const handleEndHourChange = (newHour: number) => onEndHourChange(Math.max(0, Math.min(23, newHour)));
+    const handleEndHourChange = (newHour: number) => onEndHourChange(Math.max(0, Math.min(24, newHour)));
     const handleDaysChange = (newDays: number) => onNumDaysChange(Math.max(1, Math.min(31, newDays)));
 
     const formatTime = (h: number) => `${Math.floor(h).toString().padStart(2, '0')}:00`;
@@ -149,7 +150,7 @@ const TopControls: React.FC<TopControlsProps> = ({
                         ref={dateInputRef}
                         type="date"
                         className="hidden-date-input"
-                        value={startDate.toISOString().split('T')[0]}
+                        value={localDateString(startDate)}
                         onChange={(e) => {
                             if (e.target.value) {
                                 const d = new Date(e.target.value + 'T00:00:00');

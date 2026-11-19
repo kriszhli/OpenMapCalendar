@@ -1,5 +1,6 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
 import type { PreciseRouteCache, ViewMode, TimeBlock } from './types';
+import { localDateString } from './types';
 import AppShell from './components/AppShell';
 import TopControls from './components/TopControls';
 import DayGrid from './components/DayGrid';
@@ -19,7 +20,7 @@ interface CalendarState {
 
 const DEFAULT_CALENDAR_STATE: CalendarState = {
   numDays: 5,
-  startDate: new Date().toISOString(),
+  startDate: localDateString(new Date()),
   startHour: 7,
   endHour: 22,
   viewMode: 'row',
@@ -34,7 +35,10 @@ interface CalendarResponse {
 function parseCalendarResponse(raw: unknown): CalendarResponse {
   const data = raw as Partial<CalendarState> & { state?: Partial<CalendarState>; revision?: number };
   const source = data.state ?? data;
-  const parsedDate = typeof source.startDate === 'string' ? new Date(source.startDate) : null;
+  const date = source.startDate;
+  const parsedDate = typeof date === 'string'
+    ? new Date(date.length === 10 ? date + 'T00:00:00' : date)
+    : null;
   const parsedNumDays = Number(source.numDays);
   const parsedStartHour = Number(source.startHour);
   const parsedEndHour = Number(source.endHour);
@@ -43,7 +47,7 @@ function parseCalendarResponse(raw: unknown): CalendarResponse {
     numDays: Number.isFinite(parsedNumDays) && parsedNumDays > 0 ? parsedNumDays : DEFAULT_CALENDAR_STATE.numDays,
     startDate:
       parsedDate && !Number.isNaN(parsedDate.getTime())
-        ? parsedDate.toISOString()
+        ? localDateString(parsedDate)
         : DEFAULT_CALENDAR_STATE.startDate,
     startHour: Number.isFinite(parsedStartHour)
       ? parsedStartHour
@@ -65,9 +69,16 @@ function parseCalendarResponse(raw: unknown): CalendarResponse {
   };
 }
 
+interface SyncSession {
+  id: string;
+  revision: number;
+  base: CalendarState;
+  desired: CalendarState;
+  busy: boolean;
+}
+
 function App() {
   const [isLoaded, setIsLoaded] = useState(false);
-  const [apiOnline, setApiOnline] = useState(false);
   const [numDays, setNumDays] = useState(5);
   const [startDate, setStartDate] = useState(new Date());
   const [startHour, setStartHour] = useState(7);
@@ -76,9 +87,8 @@ function App() {
   const [events, setEvents] = useState<Record<number, TimeBlock[]>>({});
   const [hoveredEventId, setHoveredEventId] = useState<string | null>(null);
   const [dayViewIndex, setDayViewIndex] = useState(0);
-  const serverRevisionRef = useRef(0);
-  const baseStateRef = useRef<CalendarState>(DEFAULT_CALENDAR_STATE);
-  const saveSeqRef = useRef(0);
+  const sessionRef = useRef<SyncSession | null>(null);
+  const loadSeqRef = useRef(0);
 
   // Multi-calendar state
   const [currentCalendarId, setCurrentCalendarId] = useState<string | null>(null);
@@ -87,7 +97,7 @@ function App() {
 
   const applyCalendarState = useCallback((state: CalendarState) => {
     setNumDays(state.numDays);
-    setStartDate(new Date(state.startDate));
+    setStartDate(new Date(state.startDate + 'T00:00:00'));
     setStartHour(state.startHour);
     setEndHour(state.endHour);
     setViewMode(state.viewMode);
@@ -96,20 +106,19 @@ function App() {
 
   // Load a specific calendar by ID
   const loadCalendar = useCallback(async (calId: string) => {
+    const seq = ++loadSeqRef.current;
     try {
       const res = await fetch(`/api/calendars/${calId}`);
       if (!res.ok) throw new Error('Failed to load');
       const data = await res.json();
       const parsed = parseCalendarResponse(data);
-      serverRevisionRef.current = parsed.revision;
-      baseStateRef.current = parsed.state;
+      if (seq !== loadSeqRef.current) return;
+      sessionRef.current = { id: calId, base: parsed.state, desired: parsed.state, revision: parsed.revision, busy: false };
       applyCalendarState(parsed.state);
       setCurrentCalendarId(calId);
       setCurrentCalendarName(data.name || 'Untitled');
-      setApiOnline(true);
     } catch (err) {
       console.error('Failed to load calendar:', err);
-      setApiOnline(false);
     }
   }, [applyCalendarState]);
 
@@ -121,7 +130,6 @@ function App() {
         return res.json();
       })
       .then((list: { id: string; name: string; updatedAt: string }[]) => {
-        setApiOnline(true);
         if (list.length === 0) {
           setShowCalendarManager(true);
           setIsLoaded(true);
@@ -139,91 +147,68 @@ function App() {
           })
           .then((data) => {
             const parsed = parseCalendarResponse(data);
-            serverRevisionRef.current = parsed.revision;
-            baseStateRef.current = parsed.state;
             applyCalendarState(parsed.state);
-            setApiOnline(true);
           })
           .catch((err2) => {
             console.error('Failed to load calendar data:', err2);
-            setApiOnline(false);
           })
           .finally(() => setIsLoaded(true));
       });
   }, [applyCalendarState, loadCalendar]);
 
-  // Pull remote updates so all connected users stay in sync.
-  useEffect(() => {
-    if (!isLoaded || !currentCalendarId) return;
-
-    const intervalMs = apiOnline ? 1000 : 5000;
-    const intervalId = window.setInterval(() => {
-      fetch(`/api/calendars/${currentCalendarId}`)
-        .then((res) => {
-          if (!res.ok) throw new Error('Failed to sync');
-          return res.json();
-        })
-        .then((data) => {
-          const parsed = parseCalendarResponse(data);
-          setApiOnline(true);
-          if (parsed.revision <= serverRevisionRef.current) return;
-          serverRevisionRef.current = parsed.revision;
-          baseStateRef.current = parsed.state;
-          applyCalendarState(parsed.state);
-        })
-        .catch((err) => {
-          if (apiOnline) {
-            console.error('Calendar API is unreachable:', err);
+  // One request per calendar at a time. If the user edits during a save,
+  // send their next delta against the snapshot they actually edited.
+  const sync = useCallback(async (session: SyncSession) => {
+    if (session.busy) return;
+    session.busy = true;
+    try {
+      do {
+        const submitted = session.desired;
+        const dirty = submitted !== session.base;
+        const res = await fetch(`/api/calendars/${session.id}`, dirty ? {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state: submitted, baseState: session.base, baseRevision: session.revision }),
+        } : undefined);
+        if (!res.ok) throw new Error(`Calendar sync failed (HTTP ${res.status})`);
+        const parsed = parseCalendarResponse(await res.json());
+        if (session.desired !== submitted) {
+          if (dirty) {
+            session.base = submitted;
+            session.revision = -1; // Force a three-way merge, including any concurrent agent addition.
           }
-          setApiOnline(false);
-        });
-    }, intervalMs);
+          continue;
+        }
+        if (dirty || parsed.revision !== session.revision) {
+          session.revision = parsed.revision;
+          session.base = session.desired = parsed.state;
+          if (sessionRef.current === session) applyCalendarState(parsed.state);
+        }
+      } while (session.desired !== session.base);
+    } catch (err) {
+      console.error('Failed to sync calendar:', err);
+    } finally {
+      session.busy = false;
+    }
+  }, [applyCalendarState]);
 
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [isLoaded, apiOnline, currentCalendarId, applyCalendarState]);
+  useLayoutEffect(() => {
+    const session = sessionRef.current;
+    if (!session || session.id !== currentCalendarId) return;
+    const state = { numDays, startDate: localDateString(startDate), startHour, endHour, viewMode, events };
+    if (JSON.stringify(state) === JSON.stringify(session.desired)) return;
+    session.desired = state;
+    void sync(session);
+  }, [currentCalendarId, numDays, startDate, startHour, endHour, viewMode, events, sync]);
 
-  // Persist to server on every state change
   useEffect(() => {
-    if (!isLoaded || !apiOnline || !currentCalendarId) return;
-
-    const state: CalendarState = {
-      numDays,
-      startDate: startDate.toISOString(),
-      startHour,
-      endHour,
-      viewMode,
-      events,
-    };
-    const saveSeq = saveSeqRef.current + 1;
-    saveSeqRef.current = saveSeq;
-
-    fetch(`/api/calendars/${currentCalendarId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        state,
-        baseState: baseStateRef.current,
-        baseRevision: serverRevisionRef.current,
-      }),
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error('Failed to save');
-        return res.json();
-      })
-      .then((data) => {
-        if (saveSeq !== saveSeqRef.current) return;
-        const parsed = parseCalendarResponse(data);
-        setApiOnline(true);
-        serverRevisionRef.current = parsed.revision;
-        baseStateRef.current = parsed.state;
-      })
-      .catch((err) => {
-        console.error('Failed to save:', err);
-        setApiOnline(false);
-      });
-  }, [isLoaded, apiOnline, currentCalendarId, numDays, startDate, startHour, endHour, viewMode, events]);
+    if (!currentCalendarId) return;
+    const interval = window.setInterval(() => {
+      const session = sessionRef.current;
+      if (session?.id === currentCalendarId) void sync(session);
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [currentCalendarId, sync]);
 
   useEffect(() => {
     if (dayViewIndex >= numDays) {
@@ -339,6 +324,7 @@ function App() {
     try {
       await fetch(`/api/calendars/${id}`, { method: 'DELETE' });
       if (id === currentCalendarId) {
+        sessionRef.current = null;
         setCurrentCalendarId(null);
         setCurrentCalendarName('');
         applyCalendarState(DEFAULT_CALENDAR_STATE);
@@ -355,6 +341,7 @@ function App() {
 
     try {
       await fetch(`/api/calendars/${currentCalendarId}`, { method: 'DELETE' });
+      sessionRef.current = null;
       setCurrentCalendarId(null);
       setCurrentCalendarName('');
       applyCalendarState(DEFAULT_CALENDAR_STATE);

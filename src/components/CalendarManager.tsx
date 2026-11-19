@@ -37,14 +37,14 @@ const CalendarManager: React.FC<CalendarManagerProps> = ({
     const newNameRef = useRef<HTMLInputElement>(null);
     const renameRef = useRef<HTMLInputElement>(null);
 
-    const fetchCalendars = useCallback(async () => {
+    const fetchCalendars = useCallback(async (background = false) => {
         try {
-            setLoading(true);
+            if (!background) setLoading(true);
             const res = await fetch('/api/calendars');
             const data: CalendarEntry[] = await res.json();
             setCalendars(data);
         } catch {
-            setCalendars([]);
+            if (!background) setCalendars([]);
         } finally {
             setLoading(false);
         }
@@ -56,6 +56,8 @@ const CalendarManager: React.FC<CalendarManagerProps> = ({
             setCreating(false);
             setRenamingId(null);
             setDeleteConfirmId(null);
+            const timer = window.setInterval(() => void fetchCalendars(true), 2000);
+            return () => window.clearInterval(timer);
         }
     }, [visible, fetchCalendars]);
 
