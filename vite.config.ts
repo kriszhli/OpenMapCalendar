@@ -18,10 +18,10 @@ export default defineConfig({
     },
   },
   server: {
-    host: '0.0.0.0',
+    host: process.env.HOST || '0.0.0.0',
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',
+        target: `http://127.0.0.1:${process.env.PORT || 3000}`,
         changeOrigin: true,
       },
     },

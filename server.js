@@ -5,18 +5,19 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
 import crypto from 'crypto';
+import { addEvent, calendarInput, calendarWindow, describeEvent, eventInput, localDate } from './lib/events.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT ?? 3000);
 const SHOULD_SERVE_STATIC = process.env.SERVE_STATIC !== 'false';
-const CALENDARS_DIR = path.join(__dirname, 'calendars');
+const CALENDARS_DIR = process.env.CALENDARS_DIR || path.join(__dirname, 'calendars');
 const LEGACY_DATA_FILE = path.join(__dirname, 'calendar-data.json');
 const DEFAULT_STATE = {
     numDays: 5,
-    startDate: new Date().toISOString(),
+    startDate: localDate(),
     startHour: 7,
     endHour: 22,
     viewMode: 'row',
@@ -43,7 +44,7 @@ const normalizeState = (raw) => {
     const endHour = Number(raw?.endHour ?? settings.endHour);
     return {
         numDays: Number.isFinite(numDays) && numDays > 0 ? numDays : DEFAULT_STATE.numDays,
-        startDate: typeof raw?.startDate === 'string' ? raw.startDate : DEFAULT_STATE.startDate,
+        startDate: typeof raw?.startDate === 'string' ? localDate(raw.startDate) : DEFAULT_STATE.startDate,
         startHour: Number.isFinite(startHour) ? startHour : DEFAULT_STATE.startHour,
         endHour: Number.isFinite(endHour) ? endHour : DEFAULT_STATE.endHour,
         viewMode: raw?.viewMode ?? settings.viewMode ?? DEFAULT_STATE.viewMode,
@@ -124,6 +125,7 @@ const readCalendarFromDisk = (id) => {
             id,
             name: raw.name || 'Untitled',
             state: normalizeState(raw.state || raw),
+            revision: Number.isSafeInteger(raw.revision) ? raw.revision : 0,
             updatedAt: raw.updatedAt || new Date().toISOString(),
         };
     } catch {
@@ -133,11 +135,22 @@ const readCalendarFromDisk = (id) => {
 
 const writeCalendarToDisk = (id, data) => {
     ensureCalendarsDir();
-    fs.writeFileSync(calendarFilePath(id), JSON.stringify({
+    const file = calendarFilePath(id);
+    const temp = file + '.tmp';
+    fs.writeFileSync(temp, JSON.stringify({
+        revision: data.revision ?? 0,
         name: data.name,
         state: data.state,
         updatedAt: data.updatedAt,
     }, null, 2));
+    fs.renameSync(temp, file);
+};
+
+const saveState = (cal, state) => {
+    const next = { ...cal, state, revision: cal.revision + 1, updatedAt: new Date().toISOString() };
+    writeCalendarToDisk(cal.id, next);
+    calendars.set(cal.id, next);
+    return next;
 };
 
 const deleteCalendarFromDisk = (id) => {
@@ -153,7 +166,7 @@ const loadAllCalendars = () => {
     // Migrate legacy calendar-data.json if it exists and calendars dir is empty
     const existingFiles = fs.readdirSync(CALENDARS_DIR).filter(f => f.endsWith('.json'));
 
-    if (existingFiles.length === 0 && fs.existsSync(LEGACY_DATA_FILE)) {
+    if (!process.env.CALENDARS_DIR && existingFiles.length === 0 && fs.existsSync(LEGACY_DATA_FILE)) {
         try {
             const legacyRaw = JSON.parse(fs.readFileSync(LEGACY_DATA_FILE, 'utf8'));
             const id = generateId();
@@ -177,7 +190,7 @@ const loadAllCalendars = () => {
         if (!calendars.has(id)) {
             const cal = readCalendarFromDisk(id);
             if (cal) {
-                calendars.set(id, { ...cal, revision: 0 });
+                calendars.set(id, cal);
             }
         }
     }
@@ -189,7 +202,7 @@ loadAllCalendars();
 app.get('/api/calendars', (req, res) => {
     const list = [];
     for (const [id, cal] of calendars.entries()) {
-        list.push({ id, name: cal.name, updatedAt: cal.updatedAt });
+        list.push({ id, name: cal.name, updatedAt: cal.updatedAt, ...calendarWindow(cal.state) });
     }
     list.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
     res.json(list);
@@ -199,11 +212,13 @@ app.get('/api/calendars', (req, res) => {
 app.post('/api/calendars', (req, res) => {
     try {
         const id = generateId();
-        const name = req.body?.name || 'Untitled';
+        const input = calendarInput.safeParse({ name: 'Untitled', ...req.body });
+        if (!input.success) return res.status(400).json({ error: input.error.message });
+        const { name, startDate = localDate(), numDays = DEFAULT_STATE.numDays } = input.data;
         const calData = {
             id,
             name,
-            state: { ...DEFAULT_STATE, startDate: new Date().toISOString() },
+            state: { ...DEFAULT_STATE, startDate, numDays },
             revision: 0,
             updatedAt: new Date().toISOString(),
         };
@@ -274,14 +289,31 @@ app.post('/api/calendars/:id', (req, res) => {
             return res.json({ success: true, state: cal.state, revision: cal.revision });
         }
 
-        cal.state = nextState;
-        cal.revision += 1;
-        cal.updatedAt = new Date().toISOString();
-        writeCalendarToDisk(id, cal);
-        res.json({ success: true, state: cal.state, revision: cal.revision });
+        const saved = saveState(cal, nextState);
+        res.json({ success: true, state: saved.state, revision: saved.revision });
     } catch (err) {
         res.status(500).json({ error: 'Failed to save data' });
     }
+});
+
+app.get('/api/calendars/:id/events', (req, res) => {
+    const cal = calendars.get(req.params.id);
+    if (!cal) return res.status(404).json({ error: 'Calendar not found' });
+    const events = Object.values(cal.state.events).flat()
+        .sort((a, b) => a.dayIndex - b.dayIndex || a.startMinutes - b.startMinutes)
+        .map(event => describeEvent(cal.state, event));
+    res.json({ calendarId: cal.id, ...calendarWindow(cal.state), revision: cal.revision, events });
+});
+
+app.post('/api/calendars/:id/events', (req, res) => {
+    const cal = calendars.get(req.params.id);
+    if (!cal) return res.status(404).json({ error: 'Calendar not found' });
+    const input = eventInput.safeParse(req.body);
+    if (!input.success) return res.status(400).json({ error: input.error.message });
+    const result = addEvent(cal.state, input.data);
+    if (result.error) return res.status(result.status).json({ error: result.error });
+    const saved = result.state ? saveState(cal, result.state) : cal;
+    res.status(result.status).json({ calendarId: cal.id, revision: saved.revision, event: result.event });
 });
 
 // ─── Legacy endpoints (backwards compat) ───
@@ -308,14 +340,16 @@ app.post('/api/calendar', (req, res) => {
     const cal = list[0];
     try {
         const incoming = normalizeState(req.body?.state ?? req.body);
-        cal.state = incoming;
-        cal.revision += 1;
-        cal.updatedAt = new Date().toISOString();
-        writeCalendarToDisk(cal.id, cal);
-        res.json({ success: true, state: cal.state, revision: cal.revision });
+        const saved = saveState(cal, incoming);
+        res.json({ success: true, state: saved.state, revision: saved.revision });
     } catch (err) {
         res.status(500).json({ error: 'Failed to save data' });
     }
+});
+
+app.use('/api', (_req, res) => res.status(404).json({ error: 'Unknown API route' }));
+app.use('/api', (err, _req, res, _next) => {
+    res.status(err.status || 500).json({ error: err.status === 400 ? 'Invalid JSON request' : 'Calendar request failed' });
 });
 
 if (SHOULD_SERVE_STATIC) {
@@ -325,9 +359,16 @@ if (SHOULD_SERVE_STATIC) {
     });
 }
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running at http://0.0.0.0:${PORT}`);
+const server = app.listen(PORT, process.env.HOST || '0.0.0.0', (error) => {
+    if (error) {
+        console.error('Calendar API could not start:', error.message);
+        process.exitCode = 1;
+        return;
+    }
+    const { address, port } = server.address();
+    console.log(`Server running at http://${address}:${port}`);
 
+    if (address !== '0.0.0.0') return;
     // Print LAN IP addresses
     const nets = os.networkInterfaces();
     const results = {};
@@ -347,7 +388,7 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log('Available on your LAN:');
     Object.keys(results).forEach((name) => {
         results[name].forEach((ip) => {
-            console.log(`  http://${ip}:${PORT}`);
+            console.log(`  http://${ip}:${port}`);
         });
     });
 });
