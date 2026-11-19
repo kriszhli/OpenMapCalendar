@@ -7,6 +7,8 @@ import DayGrid from './components/DayGrid';
 import DaySidebar from './components/DaySidebar';
 import MapView from './components/MapView';
 import CalendarManager from './components/CalendarManager';
+import Journal from './journal/Journal';
+import { Globe2 } from 'lucide-react';
 
 interface CalendarState {
   numDays: number;
@@ -77,6 +79,8 @@ interface SyncSession {
 }
 
 function App() {
+  const [screen, setScreen] = useState<'atlas' | 'calendar'>('atlas');
+  const [atlasTrip, setAtlasTrip] = useState<string | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [numDays, setNumDays] = useState(5);
   const [startDate, setStartDate] = useState(new Date());
@@ -204,10 +208,10 @@ function App() {
     if (!currentCalendarId) return;
     const interval = window.setInterval(() => {
       const session = sessionRef.current;
-      if (session?.id === currentCalendarId) void sync(session);
+      if (session?.id === currentCalendarId && (screen === 'calendar' || session.desired !== session.base)) void sync(session);
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [currentCalendarId, sync]);
+  }, [currentCalendarId, screen, sync]);
 
   useEffect(() => {
     if (dayViewIndex >= numDays) {
@@ -360,6 +364,17 @@ function App() {
 
   const isDayView = viewMode === 'day';
 
+  if (screen === 'atlas') {
+    return (
+      <Journal initialTrip={atlasTrip} onTimeline={async id => {
+        const target = id || currentCalendarId;
+        if (target) await loadCalendar(target);
+        setShowCalendarManager(!target);
+        setScreen('calendar');
+      }} />
+    );
+  }
+
   if (!isLoaded) {
     return (
       <AppShell>
@@ -380,6 +395,12 @@ function App() {
 
   return (
     <AppShell>
+      <button className="return-atlas" onClick={() => {
+        setAtlasTrip(currentCalendarId);
+        setScreen('atlas');
+      }}>
+        <Globe2 /> Travel atlas
+      </button>
       <TopControls
         numDays={numDays}
         startDate={startDate}
@@ -450,7 +471,10 @@ function App() {
         onCreateCalendar={handleCreateCalendar}
         onRenameCalendar={handleRenameCalendar}
         onDeleteCalendar={handleDeleteCalendarFromManager}
-        onClose={() => setShowCalendarManager(false)}
+        onClose={() => {
+          setShowCalendarManager(false);
+          if (!currentCalendarId) setScreen('atlas');
+        }}
       />
 
     </AppShell>

@@ -17,15 +17,25 @@ Open the app at [localhost:5173](http://localhost:5173). Vite proxies calendar r
 
 In Calendar Manager, create or select a calendar. Choose its start date, hours and Day, Row or Grid view. Drag to create a block, resize it to adjust the time, and add notes or map locations. Route lines can use a simple curve or a driving route, or you can hide them. An open timeline checks for changes once per second.
 
+## Explore the travel atlas
+
+The atlas opens on a world map of your stops. Select a red dot to open its itinerary. Choose **Trips** to search your trip library. Zoom out to return to the world view. Switch to **Photo wall** for prints from the current trip or the whole library. A fresh install shows a read-only sample collection until you create your first trip.
+
+Use **New trip**, then **Add stop** to set its time, place and travel mode. Find a place by name, pick it on the map, or enter coordinates. **Calendar** opens the timeline editor for resizing events, adding a destination or changing the travel mode. The itinerary shows the departure and arrival times implied by the schedule. Dashed lines connect stops schematically. Previously cached driving geometry appears as a solid route. **Directions** opens the leg in Google Maps for navigation or transit options.
+
+Select a stop and choose **Add photos**. JPEG, PNG and WebP files up to 16 MB and 64 megapixels each are supported. Each endpoint has its own photos. The atlas uses small WebP thumbnails and opens the original on demand. Deleting a trip or event removes its attached photographs.
+
 ## Storage and backup
 
 The server keeps trips, events, route geometry, photos and thumbnails in SQLite at `calendars/journal.sqlite`. On first startup it imports previous calendar JSON files in one transaction. It retains the source files and records that migration completed, including when a trip is later deleted. Set `CALENDARS_DIR` to run an independent library.
 
-Use `GET /api/journal/backup` to download a consistent SQLite snapshot, including originals. To open a backup separately, place it in an empty directory as `journal.sqlite` and run the server with `CALENDARS_DIR` pointing there.
+Open **Trips** and choose **Back up journal** to download a consistent SQLite snapshot, including originals. To open a backup separately, place it in an empty directory as `journal.sqlite` and run the server with `CALENDARS_DIR` pointing there.
+
+The world overview uses a bundled Natural Earth map and works offline. Zoom in, open a trip, or choose **Street map** for the detailed CARTO layers shared with the calendar. The sun or moon button changes the street map theme. Detailed tiles, place search and external directions require an internet connection. The sample photographs come from Unsplash. [Kyoto](https://images.unsplash.com/photo-1493976040374-85c8e12f0c0e) · [Liguria](https://images.unsplash.com/photo-1516483638261-f4dbaf036963) · [San Francisco](https://images.unsplash.com/photo-1449034446853-66c86144b0ad)
 
 ## CARTO account
 
-The Node server reads `CARTO_API_KEY` from its environment or the gitignored `.env.carto.local` in the checkout root. Use a server-side variable and restart the API after changing it. The calendar requests same-origin resources. The layer picker offers the original CARTO map and Voyager.
+The Node server reads `CARTO_API_KEY` from its environment or the gitignored `.env.carto.local` in the checkout root. Use a server-side variable and restart the API after changing it. Both map views request same-origin resources. The layer picker offers the original CARTO map and Voyager.
 
 - Voyager raster tiles: `/api/maps/carto/tiles/voyager/{z}/{x}/{y}.png`
 - Voyager vector style: `/api/maps/carto/voyager/style.json`. Its tile, glyph, and sprite URLs also use the local proxy.
