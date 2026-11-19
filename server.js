@@ -14,7 +14,6 @@ const PORT = 3000;
 const SHOULD_SERVE_STATIC = process.env.SERVE_STATIC !== 'false';
 const CALENDARS_DIR = path.join(__dirname, 'calendars');
 const LEGACY_DATA_FILE = path.join(__dirname, 'calendar-data.json');
-const PLANNER_SERVICE_URL = process.env.PLANNER_SERVICE_URL || 'http://127.0.0.1:8001';
 const DEFAULT_STATE = {
     numDays: 5,
     startDate: new Date().toISOString(),
@@ -282,50 +281,6 @@ app.post('/api/calendars/:id', (req, res) => {
         res.json({ success: true, state: cal.state, revision: cal.revision });
     } catch (err) {
         res.status(500).json({ error: 'Failed to save data' });
-    }
-});
-
-app.post('/api/ai/plan-events', async (req, res) => {
-    try {
-        const plannerRes = await fetch(`${PLANNER_SERVICE_URL}/api/ai/plan-events`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(req.body ?? {}),
-        });
-
-        const text = await plannerRes.text();
-        res.status(plannerRes.status);
-        res.setHeader('Content-Type', plannerRes.headers.get('content-type') || 'application/json');
-        res.send(text);
-    } catch (err) {
-        res.status(503).json({
-            error: `Unable to reach planner service at ${PLANNER_SERVICE_URL}.`,
-            detail: err?.message || 'Planner proxy request failed',
-        });
-    }
-});
-
-app.post('/api/ai/confirm-plan', async (req, res) => {
-    try {
-        const plannerRes = await fetch(`${PLANNER_SERVICE_URL}/api/ai/confirm-plan`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(req.body ?? {}),
-        });
-
-        const text = await plannerRes.text();
-        res.status(plannerRes.status);
-        res.setHeader('Content-Type', plannerRes.headers.get('content-type') || 'application/json');
-        res.send(text);
-    } catch (err) {
-        res.status(503).json({
-            error: `Unable to reach planner service at ${PLANNER_SERVICE_URL}.`,
-            detail: err?.message || 'Planner confirmation proxy request failed',
-        });
     }
 });
 

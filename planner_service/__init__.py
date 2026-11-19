@@ -1,2 +1,0 @@
-"""Local planner service package."""
-

@@ -6,13 +6,11 @@
   "scripts": {
     "dev": "node scripts/dev.js",
     "dev:client": "vite",
-    "dev:planner": "python3 -m planner_service --serve",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "start": "node server.js",
-    "host": "npm run build && node server.js",
-    "planner:health": "python3 -m planner_service --health-check"
+    "host": "npm run build && node server.js"
   },
   "dependencies": {
     "body-parser": "^2.2.2",
