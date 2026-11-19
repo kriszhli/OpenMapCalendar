@@ -3,6 +3,7 @@ import { useCalendarTheme } from '../useCalendarTheme';
 import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import { countries } from './world';
+import { stopPreview } from './stopPreview';
 import 'leaflet/dist/leaflet.css';
 import { Crosshair, Minus, Plus, Moon, Sun, Layers } from 'lucide-react';
 import { connections, type Stop } from './model';
@@ -130,6 +131,7 @@ export default function AtlasMap({ points, tripId, focus, onSelect, onWorld, onP
     const map = ref.current;
     if (!map) return;
     const layer = L.layerGroup().addTo(map);
+    const preview = picking ? null : stopPreview(map, stop => callbacks.current.onSelect(stop));
     const trips = new Set(points.map((s) => s.trip));
     for (const trip of trips) {
       const path = points.filter((p) => p.trip === trip);
@@ -179,11 +181,11 @@ export default function AtlasMap({ points, tripId, focus, onSelect, onWorld, onP
         keyboard: true,
         riseOnHover: true,
       }).addTo(layer);
-      pin.getElement()?.setAttribute('aria-label', p.place.name + ', ' + p.time);
-      pin.on('click', () => {
-        if (picking) callbacks.current.onPick?.(p.place);
-        else callbacks.current.onSelect(p);
-      });
+      if (preview) {
+        preview.bind(pin, p, overview);
+      } else {
+        pin.on('click', () => callbacks.current.onPick?.(p.place));
+      }
     }
     if (picked)
       L.circleMarker([picked.lat, picked.lng], {
@@ -194,6 +196,7 @@ export default function AtlasMap({ points, tripId, focus, onSelect, onWorld, onP
         fillOpacity: 1,
       }).addTo(layer);
     return () => {
+      preview?.remove();
       map.removeLayer(layer);
     };
   }, [points, zoom, tripId, focus, picked, overview, picking]);

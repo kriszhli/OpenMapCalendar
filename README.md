@@ -19,7 +19,7 @@ In Calendar Manager, create or select a calendar. Choose its start date, hours a
 
 ## Explore the travel atlas
 
-The atlas opens on a world map of your stops. Select a red dot to open its itinerary. Choose **Trips** to search your trip library. Zoom out to return to the world view. Switch to **Photo wall** for prints from the current trip or the whole library. A fresh install shows a read-only sample collection until you create your first trip.
+The atlas opens on a world map of your stops. Hover or focus a red dot to preview its place, date, time and photo. On a touch screen, tap the dot and choose **Open itinerary**. Choose **Trips** to search your trip library. Zoom out to return to the world view. Switch to **Photo wall** for prints from the current trip or the whole library. A fresh install shows a read-only sample collection until you create your first trip.
 
 Use **New trip**, then **Add stop** to set its time, place and travel mode. Find a place by name, pick it on the map, or enter coordinates. **Calendar** opens the timeline editor for resizing events, adding a destination or changing the travel mode. The itinerary shows the departure and arrival times implied by the schedule. Dashed lines connect stops schematically. Previously cached driving geometry appears as a solid route. **Directions** opens the leg in Google Maps for navigation or transit options.
 

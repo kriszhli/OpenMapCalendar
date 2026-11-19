@@ -291,6 +291,10 @@
   fill: #e6e6e6;
   stroke: #eee;
 }
+.atlas-overview .atlas-coastline.preview-country {
+  fill: #f2c2bf;
+  stroke: #f2c2bf;
+}
 .atlas-overview .leaflet-atlasOffline-pane > svg {
   mask-image: radial-gradient(ellipse closest-side at 50% 48%, black 28%, rgb(0 0 0 / 0.78) 56%, transparent 100%);
 }
@@ -306,6 +310,57 @@
   height: 10px;
   border-radius: 50%;
   background: #ce2c28;
+}
+.preview-open .atlas-dot {
+  outline: 8px solid rgb(206 44 40 / 0.13);
+}
+.atlas-preview {
+  position: absolute;
+  z-index: 900;
+  display: grid;
+  gap: 5px;
+  width: min(208px, calc(100% - 16px));
+  max-height: calc(100% - 16px);
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid #e4e4e4;
+  border-radius: 6px;
+  background: white;
+  color: #252525;
+  cursor: auto;
+  box-shadow: 0 3px 12px rgb(0 0 0 / 0.05);
+}
+.atlas-preview[hidden] {
+  display: none;
+}
+.atlas-preview img {
+  display: block;
+  width: 100%;
+  height: 96px;
+  object-fit: cover;
+  margin-bottom: 4px;
+  border-radius: 2px;
+}
+.atlas-preview strong {
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+.atlas-preview span,
+.journal .atlas-preview button {
+  font-size: 13px;
+  line-height: 1.4;
+}
+.atlas-preview span {
+  color: #595959;
+}
+.atlas-preview button {
+  justify-self: start;
+  padding: 4px 0;
+  color: #353535;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .wall-print {
   position: relative;
